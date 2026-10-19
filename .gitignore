@@ -1,0 +1,10 @@
+dist/
+node_modules/
+.claude/skills/lens-*/
+.agents/skills/lens-*/
+.claude/settings.json
+graphify-out/
+.DS_Store
+.env
+.env.*
+!.env.example

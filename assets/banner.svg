@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
+  <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#102638"/><stop offset="1" stop-color="#214f5e"/></linearGradient></defs>
+  <rect width="800" height="400" fill="url(#bg)"/>
+  <circle cx="720" cy="20" r="160" fill="#80e0e7" opacity=".06"/>
+  <path d="m70 80 36-20 36 20-36 20Zm0 0v40l36 20v-40m36-20v40l-36 20" fill="none" stroke="#80e0e7" stroke-width="4" stroke-linejoin="round"/>
+  <text x="170" y="91" font-family="system-ui,sans-serif" font-size="33" font-weight="700" fill="#fff">Lens Image Explorer</text>
+  <text x="170" y="124" font-family="system-ui,sans-serif" font-size="20" fill="#a9cdd7">Images. Hashes. Sizes.</text>
+  <rect x="60" y="180" width="680" height="157" rx="14" fill="#102638" opacity=".7"/>
+  <g font-family="ui-monospace,monospace" font-size="19">
+    <text x="86" y="221" fill="#fff">api:release</text><text x="300" y="221" fill="#80e0e7">sha256:a31f…92bc</text><text x="617" y="221" fill="#a9cdd7">248 MiB</text>
+    <text x="86" y="266" fill="#fff">web:release</text><text x="300" y="266" fill="#80e0e7">sha256:8bd2…71ef</text><text x="617" y="266" fill="#a9cdd7">86 MiB</text>
+    <text x="86" y="311" fill="#fff">worker:v2</text><text x="300" y="311" fill="#80e0e7">sha256:6e40…b312</text><text x="617" y="311" fill="#a9cdd7">192 MiB</text>
+  </g>
+</svg>
