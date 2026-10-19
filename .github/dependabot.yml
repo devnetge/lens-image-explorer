@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Europe/Lisbon
+    open-pull-requests-limit: 3
+    versioning-strategy: increase
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+    groups:
+      tooling:
+        applies-to: version-updates
+        dependency-type: development
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Lens supplies these packages. Even a newer patch minimum can reject
+      # the current host. Sync their ^ranges with the Lens guide after upgrades.
+      # These exclusions apply to security updates too; update Lens for fixes.
+      - dependency-name: "@k8slens/*"
+      - dependency-name: "@lensapp/*"
+      - dependency-name: react
+      - dependency-name: react-dom
+      - dependency-name: mobx
+      - dependency-name: mobx-react
+      - dependency-name: zod
+      # Keep React types on the host's React 19.2 minor; patch updates are safe
+      # to propose for review. Revisit these rules after a Lens React upgrade.
+      - dependency-name: "@types/react"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      - dependency-name: "@types/react-dom"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

@@ -29,6 +29,12 @@ npm test
 
 Run `npm run build` after every source or dependency change: Lens loads the single CommonJS bundle at `dist/index.js`. Check the renderer log for successful reload, then verify the affected Images or Pod-details flow in Lens. Record automated checks and live verification separately. Documentation-only changes need no build.
 
+## Dependency updates
+
+Dependabot checks npm dependencies weekly on Monday at 09:00 Europe/Lisbon. It groups minor and patch development-tool updates and proposes major tooling updates separately. React type definitions receive patch updates only, keeping them on the host's React 19.2 minor. Review update PRs and run the build and tests before merging.
+
+The configuration excludes Lens-provided packages (`@k8slens/*`, `@lensapp/*`, React, MobX, and Zod) from version and security update PRs. Their existing `^<host-version>` ranges must continue to accept the current Lens build; a newer minimum can prevent loading even within the same major version. Host security fixes require a compatible Lens update. After upgrading Lens, re-check its generated extension guide, sync host dependency ranges, and revisit the React type rules. Dependabot continues to propose security fixes for eligible extension-owned dependencies.
+
 ## Commits and release notes
 
 - Use one short conventional commit subject, aiming for 50 characters and never exceeding 60; for example, `fix: wrap runtime image IDs`. Keep PR titles similarly concise.
