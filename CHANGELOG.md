@@ -2,6 +2,13 @@
 
 What changed in each version of this extension, newest first.
 
+## 0.2.1
+
+- Reuse image-size and workload indexes and existing image groups to reduce repeated work during updates and searches.
+- Release failed resource subscriptions promptly and keep resource and cluster-name failures from breaking the explorer.
+- Bound cached registry and node-runtime descriptions and reuse runtime reports within Ask AI queries.
+- Keep Ask AI query results and safe errors intact when subscription cleanup fails.
+
 ## 0.2.0
 
 - Clarify namespace sharing with inline names/counts, expandable usage, and a Multiple namespaces only filter.

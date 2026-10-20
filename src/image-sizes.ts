@@ -46,6 +46,8 @@ function immutableImageID(raw: string): string | undefined {
   return `${repository ? `${repository}@` : ""}${algorithm}:${rawHash.toLowerCase()}`;
 }
 
+const byteFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+
 export function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) {
     return "Unavailable";
@@ -55,18 +57,15 @@ export function formatBytes(bytes: number): string {
   const unit = bytes === 0 ? 0 : Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** Math.max(unit, 0);
 
-  return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })} ${units[Math.max(unit, 0)]}`;
+  return `${byteFormatter.format(value)} ${units[Math.max(unit, 0)]}`;
 }
 
 /**
  * Match immutable aliases on the exact node running the container. Node sizes
  * describe image caches; repeated containers do not add to an image's size.
  */
-export function sizeForContainers(
-  containers: readonly ContainerImage[],
-  nodes: readonly NodeLike[],
-): ImageSize {
-  const byNode = new Map<string, Map<string, Set<number>>>();
+export function createImageSizeLookup(nodes: readonly NodeLike[]) {
+  const byNode = new Map<string, Map<string, { minBytes: number; maxBytes: number }>>();
 
   for (const node of nodes) {
     const nodeName = node.metadata?.name;
@@ -75,7 +74,7 @@ export function sizeForContainers(
       continue;
     }
 
-    const aliases = byNode.get(nodeName) ?? new Map<string, Set<number>>();
+    const aliases = byNode.get(nodeName) ?? new Map<string, { minBytes: number; maxBytes: number }>();
     byNode.set(nodeName, aliases);
 
     for (const image of node.status?.images ?? []) {
@@ -92,46 +91,58 @@ export function sizeForContainers(
           continue;
         }
 
-        const sizes = aliases.get(alias) ?? new Set<number>();
-        sizes.add(size);
-        aliases.set(alias, sizes);
+        const range = aliases.get(alias);
+        if (range) {
+          range.minBytes = Math.min(range.minBytes, size);
+          range.maxBytes = Math.max(range.maxBytes, size);
+        } else {
+          aliases.set(alias, { minBytes: size, maxBytes: size });
+        }
       }
     }
   }
 
-  let matchedContainers = 0;
-  let minBytes = Infinity;
-  let maxBytes = -Infinity;
+  return (containers: readonly ContainerImage[]): ImageSize => {
+    let matchedContainers = 0;
+    let minBytes = Infinity;
+    let maxBytes = -Infinity;
 
-  for (const container of containers) {
-    const alias = immutableImageID(container.imageID);
-    const sizes = alias ? byNode.get(container.nodeName)?.get(alias) : undefined;
+    for (const container of containers) {
+      const alias = immutableImageID(container.imageID);
+      const sizes = alias ? byNode.get(container.nodeName)?.get(alias) : undefined;
 
-    if (!sizes?.size) {
-      continue;
+      if (!sizes) {
+        continue;
+      }
+
+      matchedContainers += 1;
+
+      minBytes = Math.min(minBytes, sizes.minBytes);
+      maxBytes = Math.max(maxBytes, sizes.maxBytes);
     }
 
-    matchedContainers += 1;
+    const totalContainers = containers.length;
 
-    for (const size of sizes) {
-      minBytes = Math.min(minBytes, size);
-      maxBytes = Math.max(maxBytes, size);
+    if (matchedContainers === 0) {
+      return { label: "Unavailable", matchedContainers, totalContainers };
     }
-  }
 
-  const totalContainers = containers.length;
+    const range = minBytes === maxBytes ? formatBytes(minBytes) : `${formatBytes(minBytes)}–${formatBytes(maxBytes)}`;
 
-  if (matchedContainers === 0) {
-    return { label: "Unavailable", matchedContainers, totalContainers };
-  }
-
-  const range = minBytes === maxBytes ? formatBytes(minBytes) : `${formatBytes(minBytes)}–${formatBytes(maxBytes)}`;
-
-  return {
-    label: `${range}${matchedContainers < totalContainers ? " · partial" : ""}`,
-    minBytes,
-    maxBytes,
-    matchedContainers,
-    totalContainers,
+    return {
+      label: `${range}${matchedContainers < totalContainers ? " · partial" : ""}`,
+      minBytes,
+      maxBytes,
+      matchedContainers,
+      totalContainers,
+    };
   };
+}
+
+/** One-off lookup for callers without a shared Node snapshot. */
+export function sizeForContainers(
+  containers: readonly ContainerImage[],
+  nodes: readonly NodeLike[],
+): ImageSize {
+  return createImageSizeLookup(nodes)(containers);
 }

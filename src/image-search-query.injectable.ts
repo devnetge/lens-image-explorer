@@ -49,7 +49,8 @@ function safeRuntimeImageID(value: string): boolean {
 
 function validateInput(input: ImageSearchInput): Required<ImageSearchInput> {
   if (!input || typeof input !== "object" || Array.isArray(input) ||
-    typeof input.clusterId !== "string" || !input.clusterId.trim() || input.clusterId.length > 512) {
+    typeof input.clusterId !== "string" || !input.clusterId.trim() || input.clusterId.length > 512 ||
+    /[\u0000-\u001f\u007f]/.test(input.clusterId)) {
     throw new Error("Provide a nonempty Lens cluster id.");
   }
 
@@ -102,24 +103,28 @@ export function createImageSearchQuery(
       ]);
       const groups = groupImages(collectContainerImages(snapshot.get(), options.runningOnly), options.query,
         options.multipleOnly, { tagOrPin: options.tagOrPin, pinning: options.pinning });
-      const validGroups = groups.filter((group) => Boolean(describeRegistry(group.requestedImage).registry));
-      const images = validGroups.slice(0, options.limit).map((group) => {
+      let validCount = 0;
+      const images: ImageSearchResult["images"] = [];
+      for (const group of groups) {
+        if (!describeRegistry(group.requestedImage).registry) continue;
+        validCount += 1;
+        if (images.length >= options.limit) continue;
         const runtimeIDs = group.variants.map((variant) => variant.imageID).filter(Boolean);
         const runtimeImageIDs = runtimeIDs.filter(safeRuntimeImageID);
-        return {
+        images.push({
           requestedImage: group.requestedImage, repository: group.repository, tag: group.tag,
           pinnedDigest: group.pinnedDigest, runtimeImageIDs,
           omittedRuntimeImageIDCount: runtimeIDs.length - runtimeImageIDs.length,
           unreportedContainerCount: group.variants.find((variant) => !variant.imageID)?.containers.length ?? 0,
           containerCount: group.containerCount, runningCount: group.runningCount,
           namespaces: group.namespaces, multipleIDs: group.multipleIDs,
-        };
-      });
+        });
+      }
 
       return {
         clusterId: options.clusterId, namespace: options.namespace || null,
-        totalMatched: groups.length, returned: images.length, truncated: validGroups.length > images.length,
-        omittedInvalidReferences: groups.length - validGroups.length, images,
+        totalMatched: groups.length, returned: images.length, truncated: validCount > images.length,
+        omittedInvalidReferences: groups.length - validCount, images,
         evidence: "One Lens Pod snapshot. References, tags and pins come from Pod configuration; runtime image IDs " +
           "come from container status and can differ from configured registry digests. No registry access, image " +
           "scan, node inventory, or visibility verification was performed. Invalid configured references and " +
@@ -130,7 +135,7 @@ export function createImageSearchQuery(
       throw new Error("Unable to read Pod images. Check cluster connectivity and Pod read access for this namespace.");
     } finally {
       clearTimeout(timeout);
-      subscription?.dispose();
+      try { subscription?.dispose(); } catch { /* Cleanup must not expose host errors or replace the query result. */ }
     }
   };
 }

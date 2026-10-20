@@ -9,7 +9,10 @@ export function createClusterHeading(name: Promise<IComputedValue<string>>): ICo
     (value) => runInAction(() => resolved.set(value)),
     () => { /* The fallback remains usable if cluster metadata is unavailable. */ },
   );
-  return computed(() => resolved.get()?.get() || "Kubernetes cluster");
+  return computed(() => {
+    try { return resolved.get()?.get() || "Kubernetes cluster"; }
+    catch { return "Kubernetes cluster"; }
+  });
 }
 
 export const clusterHeadingInjectable = getInjectable2({

@@ -2,13 +2,13 @@ import { getInjectable2 } from "@k8slens/injectable";
 import { appsV1, coreV1, podKind, nodeKind, namespaceKind, replicaSetKind, deploymentKind, statefulSetKind, kubeResourcesInjectionToken } from "@k8slens/kubernetes-contracts";
 import { navigateToKubeResourceDetailsInjectionToken } from "@k8slens/details-panel-contracts";
 import { isNavigationSupersededError } from "@k8slens/navigation-contracts";
-import type { Subscribable, Subscription } from "@k8slens/subscribable";
-import { action, computed, observable, onBecomeObserved, onBecomeUnobserved, runInAction, type IComputedValue } from "mobx";
+import type { Subscribable } from "@k8slens/subscribable";
+import { action, computed, observable, onBecomeObserved, onBecomeUnobserved, runInAction } from "mobx";
 import type { ChangeEvent, FormEvent } from "react";
-import { collectContainerImages, groupImages, type ContainerImage, type ImageGroup, type ImagePinning, type ImageVariant, type PodLike } from "./image-model";
-import { sizeForContainers, type ImageSize, type NodeLike } from "./image-sizes";
+import { collectContainerImages, groupImages, filterImageGroups, type ContainerImage, type ImageGroup, type ImagePinning, type ImageVariant, type PodLike } from "./image-model";
+import { createImageSizeLookup, type ImageSize, type NodeLike } from "./image-sizes";
 import { createResourceState } from "./resource-state";
-import { filterPodsByWorkload, listWorkloads, resolvePodWorkload, type WorkloadKind, type WorkloadPodLike, type ReplicaSetLike, type WorkloadResourceLike, type NamespaceLike } from "./workload-model";
+import { filterPodsByWorkload, listWorkloads, createWorkloadResolver, type WorkloadKind, type WorkloadPodLike, type ReplicaSetLike, type WorkloadResourceLike, type NamespaceLike } from "./workload-model";
 
 export interface ExplorerMetadataSources {
   readonly namespaces?: () => Subscribable<readonly NamespaceLike[]>;
@@ -77,112 +77,59 @@ export function createImagesState(
   const expanded = observable.set<string>();
   const sort = observable.box<"image" | "tag" | "size" | "count">("image");
   const descending = observable.box(false);
-  const livePods = observable.box<IComputedValue<readonly PodLike[]> | undefined>(undefined, { deep: false });
-  const failure = observable.box("");
-  const liveNodes = observable.box<IComputedValue<readonly NodeLike[]> | undefined>(undefined, { deep: false });
-  const nodeFailure = observable.box("");
-  let subscription: Subscription<readonly PodLike[]> | undefined;
-  let nodeSubscription: Subscription<readonly NodeLike[]> | undefined;
-  let nodeGeneration = 0;
+  const pods = createResourceState(() => podsForNamespace(namespace.get() || undefined), "Unable to read pods.");
+  const nodes = createResourceState(nodesForCluster, "Unable to read node image inventories.");
   let observed = false;
-  let generation = 0;
   const namespaceList = createResourceState(metadata.namespaces);
   const replicaSets = createResourceState(metadata.replicaSets ? () => metadata.replicaSets!(namespace.get() || undefined) : undefined);
   const deployments = createResourceState(metadata.deployments ? () => metadata.deployments!(namespace.get() || undefined) : undefined);
   const statefulSets = createResourceState(metadata.statefulSets ? () => metadata.statefulSets!(namespace.get() || undefined) : undefined);
   const scopedMetadata = [replicaSets, deployments, statefulSets];
 
-  const stop = () => {
-    generation += 1;
-    subscription?.dispose();
-    subscription = undefined;
-    runInAction(() => livePods.set(undefined));
-  };
-
-  const start = () => {
-    stop();
-    runInAction(() => failure.set(""));
-    if (!observed) return;
-    const current = generation;
-    try {
-      subscription = podsForNamespace(namespace.get() || undefined).subscribe();
-      subscription.claim();
-      void subscription.value.then(
-        (pods) => {
-          if (generation === current) runInAction(() => livePods.set(pods));
-        },
-        (error: unknown) => {
-          if (generation === current) runInAction(() => failure.set(error instanceof Error ? error.message : "Unable to read pods."));
-        },
-      );
-    } catch (error) {
-      runInAction(() => failure.set(error instanceof Error ? error.message : "Unable to read pods."));
-    }
-  };
-
-  const stopNodes = () => {
-    nodeGeneration += 1;
-    nodeSubscription?.dispose();
-    nodeSubscription = undefined;
-    runInAction(() => liveNodes.set(undefined));
-  };
-  const startNodes = () => {
-    stopNodes();
-    runInAction(() => nodeFailure.set(""));
-    if (!nodesForCluster || !observed) return;
-    const current = nodeGeneration;
-    try {
-      nodeSubscription = nodesForCluster().subscribe();
-      nodeSubscription.claim();
-      void nodeSubscription.value.then(
-        (nodes) => { if (nodeGeneration === current) runInAction(() => liveNodes.set(nodes)); },
-        (error: unknown) => {
-          if (nodeGeneration === current) runInAction(() => nodeFailure.set(error instanceof Error ? error.message : "Unable to read node image inventories."));
-        },
-      );
-    } catch (error) {
-      runInAction(() => nodeFailure.set(error instanceof Error ? error.message : "Unable to read node image inventories."));
-    }
-  };
+  const nodeSizeLookup = computed(() => createImageSizeLookup(nodes.read([])));
 
   const inventory = computed(() => {
-    const source = livePods.get();
-    const pods = source?.get() ?? [];
-    const replicas = replicaSets.data.get()?.get() ?? [];
-    const selectedPods = filterPodsByWorkload(pods, replicas, workloadType.get(), workloadID.get());
+    const podValues = pods.read([]);
+    const replicas = replicaSets.read([]);
+    const selectedPods = filterPodsByWorkload(podValues, replicas, workloadType.get(), workloadID.get());
     const containers = collectContainerImages(selectedPods, runningOnly.get());
-    const nodes = liveNodes.get()?.get() ?? [];
+    const sizeFor = nodeSizeLookup.get();
     const allGroups: SizedImageGroup[] = groupImages(containers).map((group) => {
       const known = group.variants.filter((variant) => variant.imageID);
       return {
         ...group,
         summaryID: group.multipleIDs ? `${known.length} image IDs`
           : known[0] ? `${known[0].shortID}${known.length < group.variants.length ? " + unreported" : ""}` : "Not reported yet",
-        size: sizeForContainers(group.variants.flatMap((variant) => variant.containers), nodes),
-        variants: group.variants.map((variant) => ({ ...variant, size: sizeForContainers(variant.containers, nodes) })),
+        size: sizeFor(group.variants.flatMap((variant) => variant.containers)),
+        variants: group.variants.map((variant) => ({ ...variant, size: sizeFor(variant.containers) })),
       };
     });
     const workloadLabels = new Map<string, string>();
+    const resolveWorkload = createWorkloadResolver(replicas);
     for (const pod of selectedPods) {
-      const workload = resolvePodWorkload(pod, replicas);
+      const workload = resolveWorkload(pod);
       if (workload) workloadLabels.set(pod.metadata?.uid ?? `${pod.metadata?.namespace ?? ""}/${pod.metadata?.name ?? ""}`, `${workload.kind}/${workload.name}`);
     }
     return { containers, allGroups, workloadLabels };
   });
 
+  const scopeOptions = computed(() => {
+    const podValues = pods.read([]);
+    const namespaces = [...new Set([
+      ...namespaceList.read([]).map((entry) => entry.metadata?.name ?? ""),
+      ...podValues.map((pod) => pod.metadata?.namespace ?? ""), namespace.get(),
+    ].filter(Boolean))].sort();
+    const workloads = listWorkloads(podValues, replicaSets.read([]), deployments.read([]), statefulSets.read([]))
+      .filter((workload) => !workloadType.get() || workload.kind === workloadType.get());
+    return { namespaces, workloads };
+  });
+
   const view = computed(() => {
     const { containers, allGroups, workloadLabels } = inventory.get();
-    const pods = livePods.get()?.get() ?? [];
-    const namespaces = [...new Set([
-      ...((namespaceList.data.get()?.get() ?? []).map((entry) => entry.metadata?.name ?? "")),
-      ...pods.map((pod) => pod.metadata?.namespace ?? ""), namespace.get(),
-    ].filter(Boolean))].sort();
-    const workloads = listWorkloads(pods, replicaSets.data.get()?.get() ?? [], deployments.data.get()?.get() ?? [], statefulSets.data.get()?.get() ?? [])
-      .filter((workload) => !workloadType.get() || workload.kind === workloadType.get());
-    const sizedGroups = new Map(allGroups.map((group) => [group.id, group]));
-    const groups = groupImages(containers, search.get(), multipleOnly.get(), {
+    const { namespaces, workloads } = scopeOptions.get();
+    const groups = filterImageGroups(allGroups, search.get(), multipleOnly.get(), {
       tagOrPin: tagOrPin.get(), pinning: pinning.get(), multipleNamespacesOnly: multipleNamespacesOnly.get(),
-    }).map((group) => sizedGroups.get(group.id)!);
+    });
     groups.sort((a, b) => {
       if (sort.get() === "size") {
         if (a.size.maxBytes === undefined || b.size.maxBytes === undefined) {
@@ -196,12 +143,12 @@ export function createImagesState(
     });
 
     return {
-      status: failure.get() ? "error" as const : livePods.get() ? "ready" as const : "loading" as const,
-      error: failure.get(), groups, namespaces, workloads, workloadLabels,
+      status: pods.error.get() ? "error" as const : pods.data.get() ? "ready" as const : "loading" as const,
+      error: pods.error.get(), groups, namespaces, workloads, workloadLabels,
       workloadStatus: scopedMetadata.some((slot) => slot.error.get()) ? "error" as const
         : scopedMetadata.some((slot) => slot.configured && !slot.data.get()) ? "loading" as const : "ready" as const,
-      sizeStatus: nodeFailure.get() ? "error" as const : liveNodes.get() ? "ready" as const : nodesForCluster ? "loading" as const : "unavailable" as const,
-      sizeError: nodeFailure.get(),
+      sizeStatus: nodes.error.get() ? "error" as const : nodes.data.get() ? "ready" as const : nodesForCluster ? "loading" as const : "unavailable" as const,
+      sizeError: nodes.error.get(),
       imageCount: allGroups.length,
       containerCount: containers.length,
       multipleCount: allGroups.filter((group) => group.multipleIDs).length,
@@ -209,14 +156,15 @@ export function createImagesState(
     };
   });
 
-  onBecomeObserved(view, () => { observed = true; start(); startNodes(); namespaceList.start(); scopedMetadata.forEach((slot) => slot.start()); });
-  onBecomeUnobserved(view, () => { observed = false; stop(); stopNodes(); namespaceList.stop(); scopedMetadata.forEach((slot) => slot.stop()); });
+  onBecomeObserved(view, () => { observed = true; pods.start(); nodes.start(); namespaceList.start(); scopedMetadata.forEach((slot) => slot.start()); });
+  onBecomeUnobserved(view, () => { observed = false; pods.stop(); nodes.stop(); namespaceList.stop(); scopedMetadata.forEach((slot) => slot.stop()); });
 
   const changeNamespace = (next: string) => {
     namespaceError.set("");
     namespaceDraft.set(next);
     if (next !== namespace.get()) {
-      namespace.set(next); workloadID.set(""); expanded.clear(); start();
+      namespace.set(next); workloadID.set(""); expanded.clear();
+      observed ? pods.start() : pods.stop();
       if (observed) scopedMetadata.forEach((slot) => slot.start());
     }
   };
@@ -257,8 +205,8 @@ export function createImagesState(
       sort.set(column);
     }),
     refresh: () => {
-      failure.get() ? start() : subscription?.refresh();
-      nodeFailure.get() ? startNodes() : nodeSubscription?.refresh();
+      if (!observed) return;
+      pods.refresh(); nodes.refresh();
       namespaceList.refresh(); scopedMetadata.forEach((slot) => slot.refresh());
     },
   };

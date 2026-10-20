@@ -20,7 +20,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function podSource(value: Promise<IComputedValue<readonly PodLike[]>>) {
+function podSource(value: Promise<IComputedValue<readonly PodLike[]>>, errors: { claim?: Error; dispose?: Error } = {}) {
   let subscriptions = 0;
   let claims = 0;
   let disposals = 0;
@@ -28,7 +28,8 @@ function podSource(value: Promise<IComputedValue<readonly PodLike[]>>) {
     isLive: () => claims > disposals,
     subscribe: () => {
       subscriptions += 1;
-      return { value, claim: () => { claims += 1; }, dispose: () => { disposals += 1; }, refresh: () => {} };
+      return { value, claim: () => { claims += 1; if (errors.claim) throw errors.claim; },
+        dispose: () => { disposals += 1; if (errors.dispose) throw errors.dispose; }, refresh: () => {} };
     },
   };
   return { source, counts: () => ({ subscriptions, claims, disposals }) };
@@ -169,11 +170,42 @@ test("Ask AI search releases failed and timed-out subscriptions without echoing 
   assert.deepEqual(stalled.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
 });
 
+test("search cleanup errors cannot replace successful results or sanitized acquisition failures", async () => {
+  const privateCleanupError = new Error("example-private-cleanup-detail");
+  const ready = podSource(Promise.resolve(computed(() => [imagePod("api", "production", "example/api:v1", "runtime-a")])),
+    { dispose: privateCleanupError });
+  const result = await createImageSearchQuery(() => ready.source)({ clusterId: "cluster-a" });
+  assert.equal(result.returned, 1, "a throwing host cleanup must not discard a completed read");
+  assert.deepEqual(ready.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
+
+  for (const mode of ["claim", "computed", "timeout"] as const) {
+    const value = mode === "timeout" ? new Promise<IComputedValue<readonly PodLike[]>>(() => {})
+      : Promise.resolve(computed<readonly PodLike[]>(() => { throw new Error("example-private-read-detail"); }));
+    const source = podSource(value, { dispose: privateCleanupError,
+      claim: mode === "claim" ? new Error("example-private-claim-detail") : undefined });
+    await assert.rejects(createImageSearchQuery(() => source.source, 5)({ clusterId: "cluster-a" }), (error: Error) => {
+      assert.doesNotMatch(error.message, /example-private-/);
+      assert.match(error.message, mode === "timeout" ? /timed out/ : /Pod read access/);
+      return true;
+    });
+    assert.deepEqual(source.counts(), { subscriptions: 1, claims: 1, disposals: 1 }, mode);
+  }
+});
+
+test("timed-out image reads handle a late source rejection after disposing their consumer", async () => {
+  const value = deferred<IComputedValue<readonly PodLike[]>>();
+  const source = podSource(value.promise);
+  await assert.rejects(createImageSearchQuery(() => source.source, 5)({ clusterId: "cluster-a" }), /timed out/);
+  value.reject(new Error("example-private-late-error"));
+  await Promise.resolve();
+  assert.deepEqual(source.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
+});
+
 test("invalid Ask AI search inputs fail before any Pod subscription starts", async () => {
   let requests = 0;
   const search = createImageSearchQuery(() => { requests += 1; throw new Error("unexpected request"); });
   for (const input of [
-    undefined, null, [], {}, { clusterId: "" }, { clusterId: 123 },
+    undefined, null, [], {}, { clusterId: "" }, { clusterId: 123 }, { clusterId: "cluster-a\n" }, { clusterId: "cluster-a\u0000" },
     { clusterId: "cluster-a", namespace: "../invalid" },
     { clusterId: "cluster-a", query: false }, { clusterId: "cluster-a", tagOrPin: 42 },
     { clusterId: "cluster-a", pinning: "yes" }, { clusterId: "cluster-a", runningOnly: "yes" },

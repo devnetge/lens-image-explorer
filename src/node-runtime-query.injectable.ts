@@ -129,21 +129,44 @@ export function createImageRuntimesQuery(
         usages.set(container.nodeName, (usages.get(container.nodeName) ?? 0) + 1);
       }
       const references = [...grouped.keys()].sort((a, b) => a.localeCompare(b));
-      const validReferences = references.filter((reference) => Boolean(describeRegistry(reference).registry));
-      const images = validReferences.slice(0, options.limit).map((requestedImage) => {
+      let validCount = 0;
+      const selectedReferences: string[] = [];
+      for (const reference of references) {
+        if (!describeRegistry(reference).registry) continue;
+        validCount += 1;
+        if (selectedReferences.length < options.limit) selectedReferences.push(reference);
+      }
+      // One exact-name index per snapshot avoids scanning every Node for each image usage.
+      const nodesByName = new Map<string, RuntimeNodeLike>();
+      if (selectedReferences.length) {
+        for (const node of nodeSnapshot.values) {
+          const name = node.metadata?.name;
+          if (name && !nodesByName.has(name)) nodesByName.set(name, node);
+        }
+      }
+      const runtimesByNode = new Map<string, NodeRuntimeInfo>();
+      const runtimeForNode = (nodeName: string) => {
+        const cached = runtimesByNode.get(nodeName);
+        if (cached) return cached;
+        const node = nodesByName.get(nodeName);
+        const info = describeNodeRuntime(nodeName, node ? [node] : [],
+          nodeSnapshot.reason || (nodeName && !safeNodeName(nodeName) ? "Unavailable Node name." : undefined));
+        runtimesByNode.set(nodeName, info);
+        return info;
+      };
+      const images = selectedReferences.map((requestedImage) => {
         const nodeGroups = [...grouped.get(requestedImage)!.entries()].sort(([a], [b]) => a.localeCompare(b));
         const usages = nodeGroups.slice(0, nodeUsageLimit).map(([nodeName, containerCount]) => {
           const safeName = safeNodeName(nodeName);
           return { nodeName: safeName ? nodeName : "", containerCount,
-            runtime: describeNodeRuntime(nodeName, nodeSnapshot.values,
-              nodeSnapshot.reason || (nodeName && !safeName ? "Unavailable Node name." : undefined)) };
+            runtime: runtimeForNode(nodeName) };
         });
         return { requestedImage, containerCount: nodeGroups.reduce((count, [, containers]) => count + containers, 0),
           totalNodeUsages: nodeGroups.length, usagesTruncated: nodeGroups.length > usages.length, usages };
       });
       return { clusterId: options.clusterId, namespace: options.namespace || null, totalMatched: references.length,
-        returned: images.length, truncated: validReferences.length > images.length,
-        omittedInvalidReferences: references.length - validReferences.length,
+        returned: images.length, truncated: validCount > images.length,
+        omittedInvalidReferences: references.length - validCount,
         nodeStatus: nodeSnapshot.status, nodeReason: nodeSnapshot.reason, images,
         evidence: "One scoped Lens Pod snapshot joined by assigned Node name to one independent Node snapshot. " +
           "Runtime and version come from Node.status.nodeInfo.containerRuntimeVersion; they describe the Node, " +

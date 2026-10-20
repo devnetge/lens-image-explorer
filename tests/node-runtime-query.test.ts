@@ -17,7 +17,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function source<T>(value: Promise<IComputedValue<readonly T[]>>, claimError?: Error) {
+function source<T>(value: Promise<IComputedValue<readonly T[]>>, claimError?: Error, disposeError?: Error) {
   let subscriptions = 0;
   let claims = 0;
   let disposals = 0;
@@ -26,7 +26,7 @@ function source<T>(value: Promise<IComputedValue<readonly T[]>>, claimError?: Er
     subscribe: () => {
       subscriptions += 1;
       return { value, claim: () => { claims += 1; if (claimError) throw claimError; },
-        dispose: () => { disposals += 1; }, refresh: () => {} };
+        dispose: () => { disposals += 1; if (disposeError) throw disposeError; }, refresh: () => {} };
     },
   };
   return { source: subscribable, counts: () => ({ subscriptions, claims, disposals }) };
@@ -217,6 +217,55 @@ test("per-image Node groups are bounded without losing total container counts", 
   assert.equal(result.images[0].totalNodeUsages, 101);
   assert.equal(result.images[0].usages.length, 100);
   assert.equal(result.images[0].usagesTruncated, true);
+});
+
+test("runtime metadata is indexed once and reused across images on the same exact Node", async () => {
+  const nodeCount = 200;
+  let nameReads = 0;
+  let reportReads = 0;
+  const workerName = `worker-${nodeCount - 1}`;
+  const values: RuntimeNodeLike[] = Array.from({ length: nodeCount }, (_, index) => ({
+    metadata: { get name() { nameReads += 1; return `worker-${index}`; } },
+    status: { nodeInfo: { get containerRuntimeVersion() { reportReads += 1; return "containerd://1.7.24"; } } },
+  }));
+  // Duplicate names cannot replace the first exact match, even in a malformed host snapshot.
+  values.push(node(workerName, "cri-o://1.31.2"));
+  const pods = ready(Array.from({ length: 30 }, (_, index) => pod(`api-${index}`, `example/api-${index}:v1`, workerName)));
+  const nodes = ready(values);
+  const query = createImageRuntimesQuery(() => pods.source, () => nodes.source);
+  const result = await query({ clusterId: "cluster-a" });
+  assert.equal(result.returned, 30);
+  assert.equal(result.images.every(({ usages }) => usages[0].runtime.label === "containerd 1.7.24"), true);
+  assert.ok(nameReads <= nodeCount + 1, `one index plus one exact lookup should read about ${nodeCount} names, saw ${nameReads}`);
+  assert.equal(reportReads, 1, "one Node report serves every returned image on that Node");
+  nameReads = 0;
+  reportReads = 0;
+  const absent = await query({ clusterId: "cluster-a", imageReference: "example/not-found:v1" });
+  assert.equal(absent.returned, 0);
+  assert.equal(nameReads, 0, "empty image results do not require indexing unrelated Nodes");
+  assert.equal(reportReads, 0);
+});
+
+test("throwing cleanup cannot replace partial results or prevent sibling disposal", async () => {
+  const cleanupError = new Error("example-private-cleanup-detail");
+  const pods = source(Promise.resolve(computed(() => [pod("api", "example/api:v1")])), undefined, cleanupError);
+  const nodes = source<RuntimeNodeLike>(Promise.reject(new Error("example-private-node-detail")), undefined, cleanupError);
+  const result = await createImageRuntimesQuery(() => pods.source, () => nodes.source)({ clusterId: "cluster-a" });
+  assert.equal(result.returned, 1);
+  assert.equal(result.nodeStatus, "unavailable");
+  assert.doesNotMatch(JSON.stringify(result), /example-private-/);
+  assert.deepEqual(pods.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
+  assert.deepEqual(nodes.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
+
+  const failedPods = source<PodLike>(Promise.resolve(computed(() => { throw new Error("example-private-pod-detail"); })), undefined, cleanupError);
+  const stalledNodes = source<RuntimeNodeLike>(new Promise(() => {}), undefined, cleanupError);
+  await assert.rejects(createImageRuntimesQuery(() => failedPods.source, () => stalledNodes.source)({ clusterId: "cluster-a" }), (error: Error) => {
+    assert.match(error.message, /Pod read access/);
+    assert.doesNotMatch(error.message, /example-private-/);
+    return true;
+  });
+  assert.deepEqual(failedPods.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
+  assert.deepEqual(stalledNodes.counts(), { subscriptions: 1, claims: 1, disposals: 1 });
 });
 
 test("unsafe configured references, runtime IDs and Node labels never leak through runtime results", async () => {

@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { autorun, computed, observable, runInAction, type IComputedValue } from "mobx";
+import { autorun, computed, observable, onBecomeObserved, onBecomeUnobserved, runInAction, type IComputedValue } from "mobx";
 import { createClusterHeading } from "../src/cluster-heading.injectable";
 
 function deferred<T>() {
@@ -55,6 +55,30 @@ test("metadata rejection retains a usable string heading", async () => {
 
   assert.equal(heading.get(), "Kubernetes cluster");
   assert.equal(typeof heading.get(), "string");
+});
+
+test("live metadata read failures use the fallback, recover reactively and release observation", async () => {
+  const failed = observable.box(true);
+  const clusterName = computed(() => {
+    if (failed.get()) throw new Error("Cluster metadata unavailable");
+    return "Production";
+  });
+  let activeObservers = 0;
+  onBecomeObserved(clusterName, () => { activeObservers += 1; });
+  onBecomeUnobserved(clusterName, () => { activeObservers -= 1; });
+  const heading = createClusterHeading(Promise.resolve(clusterName));
+  await Promise.resolve();
+  assert.equal(heading.get(), "Kubernetes cluster");
+  assert.equal(activeObservers, 0, "resolving metadata does not start a retained reaction");
+  const seen: string[] = [];
+  const dispose = autorun(() => { seen.push(heading.get()); });
+  assert.equal(activeObservers, 1);
+  runInAction(() => failed.set(false));
+  assert.equal(seen.at(-1), "Production");
+  runInAction(() => failed.set(true));
+  assert.equal(seen.at(-1), "Kubernetes cluster");
+  dispose();
+  assert.equal(activeObservers, 0);
 });
 
 test("the actual ImagesView renders safely before and after async cluster metadata resolves", async (t) => {

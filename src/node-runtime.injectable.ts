@@ -41,6 +41,8 @@ export const nodeRuntimeStateInjectable = getInjectable2({
 
 export const nodeRuntimeDetailsInjectable = getInjectable2({
   id: "lens-image-explorer-node-runtime-details",
+  // Bound derived entries only; the shared per-cluster subscription owner stays stable.
+  maxCacheSize: 1024,
   instantiate: (di) => {
     const stateForCluster = di.inject(nodeRuntimeStateInjectable);
     return (clusterId: string, nodeName: string) => {

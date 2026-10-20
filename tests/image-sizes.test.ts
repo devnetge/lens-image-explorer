@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ContainerImage } from "../src/image-model.ts";
-import { formatBytes, sizeForContainers, type NodeLike } from "../src/image-sizes.ts";
+import { createImageSizeLookup, formatBytes, sizeForContainers, type NodeLike } from "../src/image-sizes.ts";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const reference = `example/api@${digest}`;
@@ -104,4 +104,29 @@ test("only complete SHA-256, SHA-384 and SHA-512 digests qualify", () => {
   for (const invalid of ["sha256:abcdef", `sha256:${"g".repeat(64)}`, `sha256:${"a".repeat(65)}`, `md5:${"a".repeat(32)}`, ""]) {
     assert.equal(sizeForContainers([container(invalid)], [node([invalid])]).label, "Unavailable", invalid);
   }
+});
+
+test("one immutable inventory snapshot serves repeated group and variant size lookups", () => {
+  let reads = 0;
+  const inventory: NodeLike = {
+    metadata: { name: "worker-a" },
+    get status() {
+      reads += 1;
+      return { images: [
+        { names: [reference, reference], sizeBytes: 120 * mib },
+        { names: [reference], sizeBytes: 160 * mib },
+        { names: [reference], sizeBytes: 140 * mib },
+      ] };
+    },
+  };
+  const lookup = createImageSizeLookup([inventory]);
+  for (let i = 0; i < 20; i += 1) {
+    assert.deepEqual(lookup([container(), container(reference, "missing")]), {
+      label: "120 MiB–160 MiB · partial", minBytes: 120 * mib, maxBytes: 160 * mib,
+      matchedContainers: 1, totalContainers: 2,
+    });
+  }
+  assert.equal(reads, 1, "queries must not re-read the Node inventory");
+  assert.equal(createImageSizeLookup([node([reference], 180 * mib)])([container()]).label, "180 MiB");
+  assert.equal(lookup([container()]).label, "120 MiB–160 MiB", "new snapshots cannot mutate existing lookups");
 });

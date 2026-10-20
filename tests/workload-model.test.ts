@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { collectContainerImages, groupImages } from "../src/image-model.ts";
 import {
   filterPodsByWorkload,
+  createWorkloadResolver,
   listWorkloads,
   resolvePodWorkload,
   type OwnerReferenceLike,
@@ -35,6 +36,18 @@ const oldRS = replicaSet("api-old", "rs-old");
 const newRS = replicaSet("api-new", "rs-new");
 const oldPod = pod("api-old-a", owner("ReplicaSet", "api-old", "rs-old"));
 const newPod = pod("api-new-a", owner("ReplicaSet", "api-new", "rs-new"));
+
+test("a shared workload resolver retains exact namespace, UID, and controller matching", () => {
+  const resolve = createWorkloadResolver([oldRS, newRS]);
+  for (const candidate of [oldPod, newPod,
+    pod("recreated", owner("ReplicaSet", "api-old", "other-uid")),
+    pod("wrong-name", owner("ReplicaSet", "other", "rs-old")),
+    pod("wrong-namespace", owner("ReplicaSet", "api-old", "rs-old"), "staging"),
+    pod("database", owner("StatefulSet", "database", "database-uid")),
+  ]) {
+    assert.deepEqual(resolve(candidate), resolvePodWorkload(candidate, [oldRS, newRS]));
+  }
+});
 
 test("old and new rollout ReplicaSets resolve to one Deployment", () => {
   const expected = { id: "production/Deployment/production-api-uid", kind: "Deployment", name: "api", namespace: "production" };

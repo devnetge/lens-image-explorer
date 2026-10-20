@@ -202,6 +202,45 @@ export function summarizeNamespaceUsage(containers: readonly ContainerImage[]): 
     .map(([namespace, containerCount]) => ({ namespace, containerCount }));
 }
 
+function matchesMetadata(
+  reference: ReturnType<typeof parseImageReference>,
+  namespaceCount: number,
+  tagOrPinNeedle: string,
+  filters: ImageMetadataFilters,
+): boolean {
+  if (filters.multipleNamespacesOnly && namespaceCount < 2) return false;
+  const pinned = Boolean(reference.pinnedDigest);
+  if ((filters.pinning === "pinned" && !pinned) || (filters.pinning === "unpinned" && pinned)) return false;
+  return !tagOrPinNeedle || (reference.tag !== "(implicit)" && reference.tag.toLowerCase().includes(tagOrPinNeedle))
+    || reference.pinnedDigest.toLowerCase().includes(tagOrPinNeedle);
+}
+
+function matchesReference(requestedImage: string, reference: ReturnType<typeof parseImageReference>, needle: string): boolean {
+  return requestedImage.toLowerCase().includes(needle) || reference.repository.toLowerCase().includes(needle)
+    || reference.tag.toLowerCase().includes(needle) || reference.pinnedDigest.toLowerCase().includes(needle);
+}
+
+function matchesContainer(container: ContainerImage, needle: string): boolean {
+  return container.reportedImage.toLowerCase().includes(needle) || container.imageID.toLowerCase().includes(needle)
+    || container.podName.toLowerCase().includes(needle) || container.namespace.toLowerCase().includes(needle)
+    || container.containerName.toLowerCase().includes(needle) || container.nodeName.toLowerCase().includes(needle);
+}
+
+/** Filter existing groups without rebuilding variants, namespace counts, or usage arrays. */
+export function filterImageGroups<T extends ImageGroup>(
+  groups: readonly T[],
+  query = "",
+  multipleOnly = false,
+  filters: ImageMetadataFilters = {},
+): T[] {
+  const needle = query.trim().toLowerCase();
+  const tagOrPinNeedle = (filters.tagOrPin ?? "").trim().toLowerCase();
+  return groups.filter((group) => (!multipleOnly || group.multipleIDs)
+    && matchesMetadata(group, group.namespaceUsages.length, tagOrPinNeedle, filters)
+    && (!needle || matchesReference(group.requestedImage, group, needle)
+      || group.variants.some((variant) => variant.containers.some((container) => matchesContainer(container, needle)))));
+}
+
 export function groupImages(
   containers: readonly ContainerImage[],
   query = "",
@@ -227,17 +266,7 @@ export function groupImages(
   for (const [requestedImage, imageContainers] of byImage) {
     const reference = parseImageReference(requestedImage);
     const namespaceUsages = summarizeNamespaceUsage(imageContainers);
-    if (filters.multipleNamespacesOnly && namespaceUsages.length < 2) continue;
-    const pinned = Boolean(reference.pinnedDigest);
-    if ((filters.pinning === "pinned" && !pinned) || (filters.pinning === "unpinned" && pinned)) {
-      continue;
-    }
-    if (tagOrPinNeedle && ![
-      reference.tag === "(implicit)" ? "" : reference.tag,
-      reference.pinnedDigest,
-    ].some((value) => value.toLowerCase().includes(tagOrPinNeedle))) {
-      continue;
-    }
+    if (!matchesMetadata(reference, namespaceUsages.length, tagOrPinNeedle, filters)) continue;
     const byID = new Map<string, ContainerImage[]>();
 
     for (const container of imageContainers) {
@@ -256,26 +285,8 @@ export function groupImages(
       continue;
     }
 
-    if (needle) {
-      const searchable = [
-        requestedImage,
-        reference.repository,
-        reference.tag,
-        reference.pinnedDigest,
-        ...imageContainers.flatMap((container) => [
-          container.reportedImage,
-          container.imageID,
-          container.podName,
-          container.namespace,
-          container.containerName,
-          container.nodeName,
-        ]),
-      ];
-
-      if (!searchable.some((value) => value.toLowerCase().includes(needle))) {
-        continue;
-      }
-    }
+    if (needle && !matchesReference(requestedImage, reference, needle)
+      && !imageContainers.some((container) => matchesContainer(container, needle))) continue;
 
     groups.push({
       id: requestedImage,

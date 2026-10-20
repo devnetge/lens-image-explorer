@@ -108,7 +108,13 @@ export function resolvePodWorkload(
   pod: WorkloadPodLike,
   replicaSets: readonly ReplicaSetLike[],
 ): WorkloadOption | undefined {
-  return resolveWithIndex(pod, replicaSetIndex(replicaSets));
+  return createWorkloadResolver(replicaSets)(pod);
+}
+
+/** Reuse the exact-UID ownership index when resolving a Pod snapshot. */
+export function createWorkloadResolver(replicaSets: readonly ReplicaSetLike[]) {
+  const index = replicaSetIndex(replicaSets);
+  return (pod: WorkloadPodLike): WorkloadOption | undefined => resolveWithIndex(pod, index);
 }
 
 export function listWorkloads(

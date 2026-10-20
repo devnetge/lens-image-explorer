@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   collectContainerImages,
+  filterImageGroups,
   groupImages,
   parseImageReference,
   shortImageID,
   summarizeNamespaceUsage,
+  type ImageMetadataFilters,
   type PodLike,
 } from "../src/image-model.ts";
 
@@ -125,6 +127,35 @@ function replica(uid: string, namespace: string, node: string, imageID?: string)
     },
   };
 }
+
+test("filtering cached groups preserves full usage and group identity across filter combinations", () => {
+  const containers = collectContainerImages([
+    replica("arm", "production", "arm-node", `sha256:${hashA}`),
+    replica("amd", "staging", "amd-node", `sha256:${hashB}`),
+    mixedPod,
+    { ...mixedPod, metadata: { uid: "pinned", name: "pinned-api", namespace: "test" },
+      spec: { containers: [{ name: "api", image: `example/api:v2@sha256:${hashA}` }] } },
+  ], false);
+  const cached = groupImages(containers);
+  const filters: ImageMetadataFilters[] = [
+    {}, { pinning: "pinned" }, { pinning: "unpinned" }, { tagOrPin: " STABLE " },
+    { tagOrPin: hashA.slice(0, 16) }, { multipleNamespacesOnly: true },
+    { tagOrPin: "stable", pinning: "unpinned", multipleNamespacesOnly: true },
+  ];
+  for (const query of ["", " AMD-NODE ", "production", "api:resolved", "(implicit)", hashB, "absent"]) {
+    for (const multiple of [false, true]) {
+      for (const metadata of filters) {
+        const result = filterImageGroups(cached, query, multiple, metadata);
+        assert.deepEqual(result, groupImages(containers, query, multiple, metadata));
+        for (const group of result) assert.equal(group, cached.find((candidate) => candidate.id === group.id));
+      }
+    }
+  }
+  const matching = filterImageGroups(cached, "amd-node", false, { multipleNamespacesOnly: true });
+  assert.equal(matching.length, 1);
+  assert.equal(matching[0].containerCount, 2);
+  assert.deepEqual(matching[0].namespaces, ["production", "staging"]);
+});
 
 test("groups expose multiple raw runtime IDs without claiming mismatched digest types", () => {
   const containers = collectContainerImages([

@@ -20,7 +20,12 @@ interface TestSubscription<T> extends Subscription<readonly T[]> {
 /** A controllable list/watch source using the public subscribable contract. */
 function resourceSource<T>() {
   const values = observable.box<readonly T[]>([], { deep: false });
-  const liveValue = computed(() => values.get());
+  const readFailure = observable.box<Error | undefined>(undefined);
+  const liveValue = computed(() => {
+    const failure = readFailure.get();
+    if (failure) throw failure;
+    return values.get();
+  });
   const subscriptions: TestSubscription<T>[] = [];
   const source: Subscribable<readonly T[]> = {
     isLive: () => subscriptions.some((subscription) => !subscription.disposed),
@@ -55,6 +60,7 @@ function resourceSource<T>() {
     source,
     subscriptions,
     publish: (next: readonly T[]) => runInAction(() => values.set(next)),
+    failRead: (error?: Error) => runInAction(() => readFailure.set(error)),
   };
 }
 
@@ -588,4 +594,152 @@ test("multiple-namespace filtering combines with search and follows namespace an
   state.clearSearchFilters();
   assert.equal(state.multipleNamespacesOnly.get(), true);
   assert.equal(state.namespace.get(), "production");
+});
+
+test("live Node and workload metadata read failures preserve Pods and recover through refresh", async (t) => {
+  const pods = podSource();
+  const nodes = resourceSource<NodeLike>();
+  const replicaSets = resourceSource<ReplicaSetLike>();
+  const state = createImagesState(() => pods.source, () => nodes.source, { replicaSets: () => replicaSets.source });
+  let current = state.view.get();
+  const dispose = autorun(() => { current = state.view.get(); });
+  t.after(dispose);
+  pods.publish([pod("api", "production", "example/api:v1")]);
+  nodes.publish([]); replicaSets.publish([]);
+  for (const source of [pods, nodes, replicaSets]) source.subscriptions[0].resolve();
+  await Promise.resolve();
+  assert.equal(current.status, "ready");
+  assert.doesNotThrow(() => nodes.failRead(new Error("Live Node read failed")));
+  assert.doesNotThrow(() => replicaSets.failRead(new Error("Live ReplicaSet read failed")));
+  assert.equal(current.status, "ready");
+  assert.equal(current.containerCount, 1);
+  assert.equal(current.groups[0].requestedImage, "example/api:v1");
+  assert.equal(current.sizeStatus, "error");
+  assert.equal(current.workloadStatus, "error");
+  assert.equal(nodes.subscriptions[0].disposals, 1);
+  assert.equal(replicaSets.subscriptions[0].disposals, 1);
+  assert.equal(pods.subscriptions[0].disposals, 0);
+  state.refresh();
+  nodes.failRead(); replicaSets.failRead();
+  nodes.subscriptions[1].resolve(); replicaSets.subscriptions[1].resolve();
+  await Promise.resolve();
+  assert.equal(current.sizeStatus, "ready");
+  assert.equal(current.workloadStatus, "ready");
+  assert.equal(pods.subscriptions.length, 1);
+  dispose();
+  for (const source of [pods, nodes, replicaSets]) assert.equal(source.source.isLive(), false);
+});
+
+test("live Pod read errors release the failed watch, report one error transition and retry cleanly", async (t) => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  let current = state.view.get();
+  const states: string[] = [];
+  const dispose = autorun(() => { current = state.view.get(); states.push(current.status); });
+  t.after(dispose);
+  pods.publish([pod("api", "production", "example/api:v1")]);
+  pods.subscriptions[0].resolve();
+  await Promise.resolve();
+  states.length = 0;
+  assert.doesNotThrow(() => pods.failRead(new Error("Live Pod read failed")));
+  assert.equal(current.status, "error");
+  assert.equal(current.error, "Live Pod read failed");
+  assert.deepEqual(current.groups, []);
+  assert.equal(pods.subscriptions[0].disposals, 1);
+  assert.ok(states.length <= 2, "failure handling must settle without a reaction loop");
+  assert.ok(states.every((status) => status === "error"), "failure must not flush an intermediate loading state");
+  state.refresh();
+  pods.failRead();
+  pods.subscriptions[1].resolve();
+  await Promise.resolve();
+  assert.equal(current.status, "ready");
+  assert.equal(current.imageCount, 1);
+  assert.equal(pods.subscriptions[1].claims, 1);
+  dispose();
+  assert.equal(pods.source.isLive(), false);
+});
+
+test("refreshing an unobserved view cannot restart failed optional metadata watches", async () => {
+  const pods = podSource();
+  const namespaces = resourceSource<NamespaceLike>();
+  const state = createImagesState(() => pods.source, undefined, { namespaces: () => namespaces.source });
+  const dispose = autorun(() => { state.view.get(); });
+  pods.publish([pod("api", "production", "example/api:v1")]);
+  pods.subscriptions[0].resolve();
+  namespaces.subscriptions[0].reject(new Error("Namespace list unavailable"));
+  await Promise.resolve();
+  assert.equal(namespaces.subscriptions[0].disposals, 1, "a rejected metadata consumer is released immediately");
+  dispose();
+  state.refresh();
+  assert.equal(namespaces.subscriptions.length, 1);
+  assert.equal(pods.subscriptions.length, 1);
+  assert.equal(namespaces.source.isLive(), false);
+  assert.equal(pods.source.isLive(), false);
+});
+
+test("size indexing and sized image groups are reused across local filters and Pod-only updates", async (t) => {
+  const pods = podSource();
+  const nodes = resourceSource<NodeLike>();
+  const digest = `sha256:${"a".repeat(64)}`;
+  const imagePod = (name: string, image: string): PodLike => ({
+    ...pod(name, "production", image), spec: { nodeName: "worker-a", containers: [{ name: "app", image }] },
+    status: { containerStatuses: [{ name: "app", imageID: digest, state: { running: {} }, ready: true }] },
+  });
+  let inventoryReads = 0;
+  const node = (sizeBytes: number): NodeLike => ({ metadata: { name: "worker-a" }, status: {
+    get images() { inventoryReads += 1; return [{ names: [digest], sizeBytes }]; },
+  } });
+  const state = createImagesState(() => pods.source, () => nodes.source);
+  let current = state.view.get();
+  const dispose = autorun(() => { current = state.view.get(); });
+  t.after(dispose);
+  pods.publish([imagePod("api", "example/api:v1"), imagePod("worker", "example/worker:v1")]);
+  nodes.publish([node(1024)]);
+  pods.subscriptions[0].resolve(); nodes.subscriptions[0].resolve();
+  await Promise.resolve();
+  assert.equal(inventoryReads, 1, "all groups and variants share one Node image index");
+  const original = current.groups.find((group) => group.requestedImage === "example/api:v1")!;
+  state.setSearch({ currentTarget: { value: "api" } } as ChangeEvent<HTMLInputElement>);
+  state.setTagOrPin({ currentTarget: { value: "v1" } } as ChangeEvent<HTMLInputElement>);
+  state.sortBy("size");
+  assert.equal(current.groups[0], original, "display filtering retains the precomputed sized group");
+  assert.equal(inventoryReads, 1);
+  pods.publish([imagePod("api", "example/api:v1"), imagePod("replica", "example/api:v1")]);
+  assert.equal(current.groups[0].containerCount, 2);
+  assert.equal(inventoryReads, 1, "Pod changes reuse the current Node image index");
+  nodes.publish([node(2048)]);
+  assert.equal(current.groups[0].size.label, "2 KiB");
+  assert.equal(inventoryReads, 2, "a changed Node snapshot refreshes its image index once");
+});
+
+test("namespace and workload options are reused across display filters and follow source changes", async (t) => {
+  const pods = podSource();
+  const namespaces = resourceSource<NamespaceLike>();
+  const deployments = resourceSource<WorkloadResourceLike>();
+  const state = createImagesState(() => pods.source, undefined, {
+    namespaces: () => namespaces.source, deployments: () => deployments.source,
+  });
+  let current = state.view.get();
+  const dispose = autorun(() => { current = state.view.get(); });
+  t.after(dispose);
+  pods.publish([pod("api", "production", "example/api:v1")]);
+  namespaces.publish([{ metadata: { name: "staging" } }]);
+  deployments.publish([{ metadata: { name: "api", namespace: "production" } }]);
+  for (const source of [pods, namespaces, deployments]) source.subscriptions[0].resolve();
+  await Promise.resolve();
+  const initialNamespaces = current.namespaces;
+  const initialWorkloads = current.workloads;
+  assert.deepEqual(initialNamespaces, ["production", "staging"]);
+  assert.equal(initialWorkloads.length, 1);
+  state.setSearch(inputValue("api"));
+  state.setTagOrPin(inputValue("v1"));
+  state.sortBy("count");
+  assert.equal(current.namespaces, initialNamespaces);
+  assert.equal(current.workloads, initialWorkloads);
+  namespaces.publish([{ metadata: { name: "development" } }]);
+  assert.deepEqual(current.namespaces, ["development", "production"]);
+  deployments.publish([{ metadata: { name: "worker", namespace: "production" } }]);
+  assert.equal(current.workloads[0].name, "worker");
+  state.selectWorkloadType(selectValue("StatefulSet"));
+  assert.deepEqual(current.workloads, []);
 });
