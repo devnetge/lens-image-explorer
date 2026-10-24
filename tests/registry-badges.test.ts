@@ -5,9 +5,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { build } from "esbuild";
-import { createElement } from "react";
+import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { computed, observable, runInAction } from "mobx";
+
+// Read React text children without parsing serialized HTML.
+const visibleChildText = (node: ReactNode): string => {
+  if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") return String(node);
+  if (Array.isArray(node)) return node.map(visibleChildText).join("");
+  if (!isValidElement<{ children?: ReactNode; "aria-hidden"?: boolean | string }>(node)) return "";
+  if (node.props["aria-hidden"] === true || node.props["aria-hidden"] === "true") return "";
+  return visibleChildText(node.props.children);
+};
 
 test("registry badges keep visibility honest and details available from the keyboard in both image views", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "lens-registry-badges-render-"));
@@ -128,9 +137,9 @@ test("registry badges keep visibility honest and details available from the keyb
       assert.ok(markup.includes(`role="img" aria-label="${details.providerLabel}"`), image);
       assert.match(markup, />Public<|>Private<|>Unknown</, image);
       assert.match(markup, /aria-label="[^"]*visibility (Public|Private|Unknown)/, image);
-      const summary = markup.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1];
+      const summary = ui.RegistryBadges({ details }).props.children.find((child: { type?: unknown }) => child.type === "summary");
       assert.ok(summary, "the provider logo remains keyboard accessible");
-      const visibleSummaryText = summary.replace(/<[^>]*>/g, "");
+      const visibleSummaryText = visibleChildText(summary);
       assert.ok(!visibleSummaryText.includes(details.providerLabel), "provider names belong in the accessible label and tooltip, leaving compact logos visible");
     }
     assert.match(renderBadges("ghcr.io/example/api:v1"), />Unknown</, "provider recognition alone does not establish public access");
@@ -197,11 +206,47 @@ test("registry badges keep visibility honest and details available from the keyb
     for (const value of [details.registry, details.repository, details.account, details.region, details.visibilityReason]) {
       assert.ok(value && markup.includes(value), `full registry information includes ${value}`);
     }
-    const escaped = renderToStaticMarkup(createElement(ui.RegistryBadges, {
-      details: { ...details, tooltip: "Registry <script>alert('unsafe')</script> & details" },
-    }));
-    assert.doesNotMatch(escaped, /<script>/);
-    assert.match(escaped, /&lt;script&gt;/);
+    const escapingCases = [
+      {
+        name: "lowercase script and ampersand",
+        text: "Registry <script>alert('unsafe')</script> & details",
+        expected: "Registry &lt;script&gt;alert(&#x27;unsafe&#x27;)&lt;/script&gt; &amp; details",
+      },
+      {
+        name: "uppercase script with attributes",
+        text: '<SCRIPT data-test="upper">alert("unsafe")</SCRIPT>',
+        expected: "&lt;SCRIPT data-test=&quot;upper&quot;&gt;alert(&quot;unsafe&quot;)&lt;/SCRIPT&gt;",
+      },
+      {
+        name: "mixed-case script",
+        text: "<ScRiPt type='text/javascript'>alert(1)</sCrIpT>",
+        expected: "&lt;ScRiPt type=&#x27;text/javascript&#x27;&gt;alert(1)&lt;/sCrIpT&gt;",
+      },
+      {
+        name: "image and SVG event attributes",
+        text: '<img src=x onerror="alert(1)"><svg onload=\'alert(2)\'></svg>',
+        expected: "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&lt;svg onload=&#x27;alert(2)&#x27;&gt;&lt;/svg&gt;",
+      },
+      {
+        name: "encoded markup stays literal",
+        text: "&lt;script&gt; &quot;unsafe&quot; &#60;img&#62; &#x3c;svg&#x3e;",
+        expected: "&amp;lt;script&amp;gt; &amp;quot;unsafe&amp;quot; &amp;#60;img&amp;#62; &amp;#x3c;svg&amp;#x3e;",
+      },
+      {
+        name: "malformed delimiters and both quote styles",
+        text: '<<script> <img src=x onerror=alert(1) < > & "quoted" \'single\'',
+        expected: "&lt;&lt;script&gt; &lt;img src=x onerror=alert(1) &lt; &gt; &amp; &quot;quoted&quot; &#x27;single&#x27;",
+      },
+    ];
+    for (const { name, text, expected } of escapingCases) {
+      const badge = ui.RegistryBadges({ details: { ...details, tooltip: text } });
+      const body = badge.props.children.find((child: { props?: { $className?: string } }) => child.props?.$className === "lie-registry-details");
+      assert.ok(body, name);
+      assert.equal(body.props.children, text, `${name}: the complete input remains a text child`);
+      const expectedBody = `<div class="lie-registry-details">${expected}</div>`;
+      assert.equal(renderToStaticMarkup(body), expectedBody, name);
+      assert.ok(renderToStaticMarkup(badge).endsWith(`${expectedBody}</details>`), `${name}: the full disclosure keeps the escaped body`);
+    }
   });
 
   await t.test("labeled search controls call their matching state handlers and clear only search filters", () => {
@@ -296,8 +341,9 @@ test("registry badges keep visibility honest and details available from the keyb
     const disclosure = three.match(/<details\b([^>]*)>([\s\S]*?)<\/details>/);
     assert.ok(disclosure, "three namespaces have a keyboard-operable native disclosure");
     assert.doesNotMatch(disclosure[1], /\bopen(?:\s|=|$)/);
-    const summary = disclosure[2].match(/^<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1];
-    assert.ok(summary?.replace(/<[^>]*>/g, "").includes("3 namespaces"));
+    const summary = ui.NamespaceUsage({ usages }).props.children.find((child: { type?: unknown }) => child.type === "summary");
+    assert.ok(summary, "the namespace disclosure has a native summary");
+    assert.equal(visibleChildText(summary), "3 namespaces ");
     for (const usage of usages) {
       assert.ok(disclosure[2].includes(usage.namespace), "expanded details retain the complete namespace name");
       assert.ok(disclosure[2].includes(`${usage.containerCount} container${usage.containerCount === 1 ? "" : "s"}`));
@@ -355,7 +401,9 @@ test("registry badges keep visibility honest and details available from the keyb
     ui.resetTestRenderedProps();
     const markup = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
     assert.equal([...markup.matchAll(/class="lie-image-group"/g)].length, 2);
-    const tagCells = [...markup.matchAll(/<code\b[^>]*class="lie-tag"[^>]*>([\s\S]*?)<\/code>/g)].map((match) => match[1].replace(/<[^>]*>/g, ""));
+    const tagCells = ui.getTestRenderedProps()
+      .filter(({ props }: { props: { $className?: string } }) => props.$className === "lie-tag")
+      .map(({ props }: { props: { children?: ReactNode } }) => visibleChildText(props.children));
     assert.equal(tagCells.length, 2);
     assert.ok(tagCells.some((text) => text.includes("sha256:a")));
     assert.ok(tagCells.some((text) => text.includes("sha256:b")));
