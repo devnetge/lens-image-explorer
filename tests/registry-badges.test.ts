@@ -137,9 +137,10 @@ test("registry badges keep visibility honest and details available from the keyb
       assert.ok(markup.includes(`role="img" aria-label="${details.providerLabel}"`), image);
       assert.match(markup, />Public<|>Private<|>Unknown</, image);
       assert.match(markup, /aria-label="[^"]*visibility (Public|Private|Unknown)/, image);
-      const summary = ui.RegistryBadges({ details }).props.children.find((child: { type?: unknown }) => child.type === "summary");
+      const summary = markup.match(/<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1];
       assert.ok(summary, "the provider logo remains keyboard accessible");
-      const visibleSummaryText = visibleChildText(summary);
+      // Inspect text emitted by nested components too, without rewriting HTML.
+      const visibleSummaryText = [...summary.matchAll(/>([^<]*)/g)].map((match) => match[1]).join("");
       assert.ok(!visibleSummaryText.includes(details.providerLabel), "provider names belong in the accessible label and tooltip, leaving compact logos visible");
     }
     assert.match(renderBadges("ghcr.io/example/api:v1"), />Unknown</, "provider recognition alone does not establish public access");
