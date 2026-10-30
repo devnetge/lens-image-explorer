@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { build } from "esbuild";
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { computed, observable, runInAction } from "mobx";
+import { autorun, computed, observable, runInAction } from "mobx";
 
 // Read React text children without parsing serialized HTML.
 const visibleChildText = (node: ReactNode): string => {
@@ -32,7 +32,7 @@ test("registry badges keep visibility honest and details available from the keyb
         export { registryDetailsInjectable } from ${source("registry-details.injectable.ts")};
         export { ImagesView, FullImageID } from ${source("images-view.tsx")};
         export { PodImages, PodRuntimeImageID } from ${source("pod-images.injectable.tsx")};
-        export { imagesStateInjectable, imageActionsInjectable, describePodImagesInjectable } from ${source("images-state.injectable.ts")};
+        export { createImagesState, imagesStateInjectable, imageActionsInjectable, describePodImagesInjectable } from ${source("images-state.injectable.ts")};
         export { clusterHeadingInjectable } from ${source("cluster-heading.injectable.ts")};
         export { NodeRuntime, NodeRuntimeLabel } from ${source("node-runtime-view.tsx")};
         export { NamespaceUsage } from ${source("namespace-usage.tsx")};
@@ -54,7 +54,7 @@ test("registry badges keep visibility honest and details available from the keyb
             import { jsx as renderJsx, jsxs as renderJsxs, Fragment } from ${JSON.stringify(jsxRuntime)};
             const rendered = [];
             const track = (render) => (type, props, key) => {
-              if (props && (props["aria-label"] || props.$tooltip || props.type === "checkbox" || props.children === "Clear search")) rendered.push({ type, props });
+              if (props && (props["aria-label"] || props.$tooltip || props.title || props.onClick || props.onKeyDown || props.type === "checkbox")) rendered.push({ type, props });
               return render(type, props, key);
             };
             export { Fragment };
@@ -108,6 +108,18 @@ test("registry badges keep visibility honest and details available from the keyb
   const runtimeDetails = (clusterId: string, nodeName: string) => {
     runtimeCalls.push([clusterId, nodeName]);
     return computed(() => runtimeByNode.get(nodeName) ?? unavailableRuntime);
+  };
+  const compactState = <T extends Record<string, unknown>>(state: T) => {
+    const scopeOpen = observable.box(false);
+    const namespaceExpanded = observable.set<string>();
+    return {
+      scopeOpen, namespaceExpanded, namespaceManual: observable.box(false),
+      activeFilters: computed(() => []), scopeCount: computed(() => 0), showReset: computed(() => false), relaxedFilters: computed(() => []),
+      toggleScope: () => runInAction(() => scopeOpen.set(!scopeOpen.get())),
+      toggleNamespaces: (id: string) => runInAction(() => { namespaceExpanded.has(id) ? namespaceExpanded.delete(id) : namespaceExpanded.add(id); }),
+      toggleMultipleOnly: () => {}, clearFilter: (_id: string) => {}, resetAllFilters: () => {},
+      ...state,
+    };
   };
 
   await t.test("node runtime labels preserve reported evidence and unavailable reasons", () => {
@@ -263,7 +275,7 @@ test("registry badges keep visibility honest and details available from the keyb
     const state = {
       view: computed(() => ({ status: "ready", sizeStatus: "unavailable", groups: [], imageCount: 3, containerCount: 3,
         namespaceCount: 1, multipleCount: 0, error: "", sizeError: "", namespaces: ["production"],
-        workloadStatus: "ready", workloadLabels: new Map(), workloads: [] })),
+        workloadStatus: "ready", workloadLabels: new Map(), matchFields: new Map(), workloads: [] })),
       search, tagOrPin, pinning, namespace: observable.box("production"), namespaceDraft: observable.box(""), namespaceError: observable.box(""),
       runningOnly: observable.box(true), multipleOnly: observable.box(false), multipleNamespacesOnly, workloadType: observable.box(""), workloadID: observable.box("workload-a"),
       expanded: observable.set<string>(), sort: observable.box("image"), descending: observable.box(false), sortBy: noop, toggleExpanded: noop,
@@ -276,7 +288,7 @@ test("registry badges keep visibility honest and details available from the keyb
       selectNamespace: noop, selectWorkloadType: noop, selectWorkload: noop,
     };
     ui.setTestInjections(new Map([
-      [ui.imagesStateInjectable, state], [ui.imageActionsInjectable, { feedback: observable.box("") }],
+      [ui.imagesStateInjectable, compactState(state)], [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined) }],
       [ui.clusterHeadingInjectable, computed(() => "Production")],
     ]));
     const render = () => {
@@ -284,27 +296,27 @@ test("registry badges keep visibility honest and details available from the keyb
       return renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
     };
     const markup = render();
-    assert.match(markup, /<label[^>]*>Search all fields<\/label>/);
+    assert.match(markup, /<label[^>]*>Search<\/label>/);
     assert.match(markup, /<label[^>]*>Tag \/ pin<\/label>/);
     assert.match(markup, /<label[^>]*>Pinning<\/label>/);
-    assert.match(markup, /both search fields apply together/);
-    assert.match(markup, /Showing 0 of 3 image references/);
+    assert.match(markup, /Search and Tag \/ pin apply together/);
+    assert.match(markup, /Showing <b>0<\/b> of <b>3<\/b> image references/);
     const rendered = ui.getTestRenderedProps();
     const query = rendered.find(({ props }: { props: Record<string, unknown> }) => props["aria-label"] === "Search images").props;
     const tag = rendered.find(({ props }: { props: Record<string, unknown> }) => props["aria-label"] === "Search tag or pin").props;
     const pin = rendered.find(({ props }: { props: Record<string, unknown> }) => props["aria-label"] === "Image pinning").props;
     const clear = rendered.find(({ props }: { props: Record<string, unknown> }) => props.children === "Clear search").props;
     const namespacesOnly = rendered.find(({ props }: { props: Record<string, unknown> }) => props.onChange === state.setMultipleNamespacesOnly).props;
-    assert.equal(query.type, "search");
-    assert.equal(tag.type, "search");
+    assert.equal(query.type, "text");
+    assert.equal(tag.type, "text");
     assert.equal(query["aria-describedby"], tag["aria-describedby"]);
     for (const label of ["Search images", "Search tag or pin"]) {
-      assert.match(markup, new RegExp(`<input[^>]*aria-label="${label}"[^>]*data-lens-component="TextInput"`));
+      assert.match(markup, new RegExp(`<input[^>]*aria-label="${label}"`));
     }
     assert.match(markup, /<option value="all"[^>]*>All references<\/option>/);
     assert.match(markup, /<option value="pinned">Digest pinned<\/option>/);
     assert.match(markup, /<option value="unpinned">Not pinned<\/option>/);
-    assert.equal(clear.$disabled, true, "empty queries and all references need no reset");
+    assert.equal(clear.disabled, true, "empty queries and all references need no reset");
     assert.equal(namespacesOnly.type, "checkbox");
     assert.equal(namespacesOnly.checked, false);
     namespacesOnly.onChange({ currentTarget: { checked: true } });
@@ -314,14 +326,135 @@ test("registry badges keep visibility honest and details available from the keyb
     assert.deepEqual([search.get(), tagOrPin.get(), pinning.get()], ["api", "sha256:abc", "pinned"]);
     render();
     const activeClear = ui.getTestRenderedProps().find(({ props }: { props: Record<string, unknown> }) => props.children === "Clear search").props;
-    assert.equal(activeClear.$disabled, false);
-    activeClear.$onClick();
+    assert.equal(activeClear.disabled, false);
+    activeClear.onClick();
     assert.deepEqual(calls, ["namespaces", "search", "tag", "pinning", "clear"]);
     assert.deepEqual([search.get(), tagOrPin.get(), pinning.get()], ["", "", "all"]);
     assert.equal(state.namespace.get(), "production");
     assert.equal(state.workloadID.get(), "workload-a");
     assert.equal(state.runningOnly.get(), true);
     assert.equal(multipleNamespacesOnly.get(), true, "clearing search does not clear the separate namespace-count filter");
+  });
+
+  await t.test("compact scope, filter chips and empty-result recovery operate the actual explorer state", async (subtest) => {
+    const pod = {
+      metadata: { uid: "api", name: "api-0", namespace: "production" },
+      spec: { containers: [{ name: "app", image: "example/api:stable" }] },
+      status: { containerStatuses: [{ name: "app", imageID: "runtime-api", state: { running: {} }, ready: true }] },
+    };
+    const watch = (values: readonly unknown[]) => ({
+      isLive: () => true,
+      subscribe: () => ({ value: Promise.resolve(computed(() => values)), claim() {}, dispose() {}, refresh() {} }),
+    });
+    const state = ui.createImagesState(() => watch([pod]));
+    const dispose = autorun(() => state.view.get());
+    subtest.after(dispose);
+    await Promise.resolve();
+    ui.setTestInjections(new Map([
+      [ui.imagesStateInjectable, state],
+      [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {}, openPod: async () => {} }],
+      [ui.clusterHeadingInjectable, computed(() => "Synthetic cluster")],
+      [ui.registryDetailsInjectable, ui.describeRegistry],
+    ]));
+    const render = () => {
+      ui.resetTestRenderedProps();
+      return renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    };
+    const propsMatching = (predicate: (props: Record<string, any>) => boolean) => {
+      const entry = ui.getTestRenderedProps().find(({ props }: { props: Record<string, any> }) => predicate(props));
+      assert.ok(entry, "the expected interactive element was rendered");
+      return entry.props;
+    };
+    const initial = render();
+    assert.match(initial, /class="row row-scope" hidden=""/);
+    const scopeToggle = propsMatching((props) => props.onClick === state.toggleScope);
+    assert.equal(scopeToggle["aria-expanded"], false);
+    assert.equal(scopeToggle["aria-controls"], "lie-cluster-a-scope");
+    scopeToggle.onClick();
+    const opened = render();
+    assert.doesNotMatch(opened, /class="row row-scope" hidden=/);
+    assert.equal(propsMatching((props) => props.onClick === state.toggleScope)["aria-expanded"], true);
+
+    propsMatching((props) => props["aria-label"] === "Search images").onChange({ currentTarget: { value: "api-0" } });
+    assert.match(render(), /class="img-match">Matched on pod<\/div>/, "a usage-only match explains why its image remains visible");
+    propsMatching((props) => props["aria-label"] === "Search images").onChange({ currentTarget: { value: "example/api" } });
+    assert.doesNotMatch(render(), /class="img-match"/, "a configured-reference match needs no usage-only label");
+    propsMatching((props) => props["aria-label"] === "Search images").onChange({ currentTarget: { value: "api" } });
+    propsMatching((props) => props["aria-label"] === "Search tag or pin").onChange({ currentTarget: { value: "missing-tag" } });
+    const empty = render();
+    assert.match(empty, /No image references match/);
+    assert.match(empty, /Remove one filter to see results/);
+    assert.match(empty, /class="relax-n">1 result<\/span>/);
+    assert.match(empty, /aria-label="Remove filter: Search api"/);
+    propsMatching((props) => props.className === "relax-btn").onClick();
+    assert.equal(state.tagOrPin.get(), "");
+    assert.equal(state.search.get(), "api", "relaxing one filter keeps the other active query");
+    assert.equal(state.view.get().groups.length, 1);
+
+    render();
+    propsMatching((props) => props["aria-label"] === "Remove filter: Search api").onClick();
+    assert.equal(state.search.get(), "");
+    const hostileQuery = '<img src=x onerror="1"> & "quoted"';
+    state.setSearch({ currentTarget: { value: hostileQuery } });
+    const escapedChip = render();
+    assert.ok(escapedChip.includes("&lt;img src=x onerror=&quot;1&quot;&gt; &amp; &quot;quoted&quot;"));
+    assert.equal(propsMatching((props) => props.className === "chip-v").children, hostileQuery);
+
+    state.selectNamespace({ currentTarget: { value: "production" } });
+    state.setMultipleNamespacesOnly({ currentTarget: { checked: true } });
+    await Promise.resolve();
+    assert.match(render(), /cannot match while Namespace is set to a single namespace/);
+    propsMatching((props) => props.onClick === state.resetAllFilters).onClick();
+    assert.equal(state.search.get(), "");
+    assert.equal(state.namespace.get(), "");
+    assert.equal(state.multipleNamespacesOnly.get(), false);
+    assert.equal(state.runningOnly.get(), true);
+    await Promise.resolve();
+    assert.match(render(), /Showing <b>1<\/b> of <b>1<\/b> image references/);
+  });
+
+  await t.test("unknown references and partially reported IDs stay explicit without inventing variants", async (subtest) => {
+    const partialImage = "registry.example/team/api:stable";
+    const missingImage = "registry.example/team/never-reported:stable";
+    const pod = (name: string, image: string, imageID: string) => ({
+      metadata: { uid: name, name, namespace: "demo" },
+      spec: { containers: [{ name: "app", image }] },
+      status: { containerStatuses: [{ name: "app", imageID, state: { running: {} }, ready: true }] },
+    });
+    const values = [pod("reported", partialImage, "runtime-known"), pod("missing-a", partialImage, ""),
+      pod("missing-b", partialImage, ""), pod("unrecognized", "invalid image reference", "runtime-other"),
+      pod("not-reported", missingImage, "")];
+    const state = ui.createImagesState(() => ({
+      isLive: () => true,
+      subscribe: () => ({ value: Promise.resolve(computed(() => values)), claim() {}, dispose() {}, refresh() {} }),
+    }));
+    subtest.after(autorun(() => state.view.get()));
+    await Promise.resolve();
+    ui.setTestInjections(new Map([
+      [ui.imagesStateInjectable, state],
+      [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {}, openPod: async () => {} }],
+      [ui.clusterHeadingInjectable, computed(() => "Synthetic cluster")], [ui.registryDetailsInjectable, ui.describeRegistry],
+      [ui.nodeRuntimeDetailsInjectable, runtimeDetails],
+    ]));
+    const render = () => {
+      ui.resetTestRenderedProps();
+      return renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    };
+    const collapsed = render();
+    assert.match(collapsed, />Unrecognized image reference<\/span>/);
+    assert.match(collapsed, />Registry unavailable<\/div>/);
+    assert.match(collapsed, />Some IDs not reported<\/span>/);
+    assert.match(collapsed, />Not reported<\/span>/);
+    assert.doesNotMatch(collapsed, /different IDs<\/button>/, "unreported status is not another runtime image ID");
+    const partial = state.view.get().groups.find((group: { requestedImage: string }) => group.requestedImage === partialImage);
+    const missing = state.view.get().groups.find((group: { requestedImage: string }) => group.requestedImage === missingImage);
+    state.toggleExpanded(partial.id);
+    state.toggleExpanded(missing.id);
+    const expanded = render();
+    assert.match(expanded, />2 containers have no reported image ID\.<\/p>/);
+    assert.match(expanded, /No container status reports an image ID\. The image may not have been pulled yet\./);
+    const fullIDCopyButtons = ui.getTestRenderedProps().filter(({ props }: { props: Record<string, unknown> }) => props["aria-label"] === "Copy full runtime image ID");
+    assert.equal(fullIDCopyButtons.length, 1, "only the one reported runtime ID gets an expanded copy button");
   });
 
   await t.test("namespace usage shows one or two names and uses a closed native disclosure for three or more", () => {
@@ -385,7 +518,7 @@ test("registry badges keep visibility honest and details available from the keyb
     const state = {
       view: computed(() => ({ status: "ready", sizeStatus: "unavailable", groups, imageCount: 2, containerCount: 4,
         namespaceCount: 3, multipleCount: 0, error: "", sizeError: "", namespaces: ["alpha", "beta", "gamma"],
-        workloadStatus: "ready", workloadLabels: new Map(), workloads: [] })),
+        workloadStatus: "ready", workloadLabels: new Map(), matchFields: new Map(), workloads: [] })),
       search: observable.box(""), tagOrPin: observable.box(""), pinning: observable.box("all"),
       namespace: observable.box(""), namespaceDraft: observable.box(""), namespaceError: observable.box(""),
       runningOnly: observable.box(true), multipleOnly: observable.box(false), multipleNamespacesOnly: observable.box(false),
@@ -395,34 +528,43 @@ test("registry badges keep visibility honest and details available from the keyb
       setNamespaceDraft: noop, applyNamespace: noop, setRunningOnly: noop, setMultipleOnly: noop, setMultipleNamespacesOnly: noop,
       selectNamespace: () => { scopeChanges += 1; }, selectWorkloadType: noop, selectWorkload: noop, sortBy: noop, toggleExpanded: noop,
     };
+    const displayState = compactState(state);
     ui.setTestInjections(new Map([
-      [ui.imagesStateInjectable, state], [ui.imageActionsInjectable, { feedback: observable.box("") }],
+      [ui.imagesStateInjectable, displayState], [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {} }],
       [ui.clusterHeadingInjectable, computed(() => "Production")], [ui.registryDetailsInjectable, ui.describeRegistry],
     ]));
     ui.resetTestRenderedProps();
     const markup = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
-    assert.equal([...markup.matchAll(/class="lie-image-group"/g)].length, 2);
+    assert.equal([...markup.matchAll(/class="ref-row"/g)].length, 2);
     const tagCells = ui.getTestRenderedProps()
-      .filter(({ props }: { props: { $className?: string } }) => props.$className === "lie-tag")
+      .filter(({ props }: { props: { className?: string } }) => props.className === "mono pin")
       .map(({ props }: { props: { children?: ReactNode } }) => visibleChildText(props.children));
     assert.equal(tagCells.length, 2);
     assert.ok(tagCells.some((text) => text.includes("sha256:a")));
     assert.ok(tagCells.some((text) => text.includes("sha256:b")));
     assert.ok(tagCells.every((text) => !text.includes("Digest pinned")));
-    const tooltipProps = ui.getTestRenderedProps().map(({ props }: { props: { $tooltip?: string } }) => props.$tooltip);
+    const tooltipProps = ui.getTestRenderedProps().map(({ props }: { props: { title?: string } }) => props.title);
     assert.ok(tooltipProps.some((value: unknown) => typeof value === "string" && value.includes(pinA)));
     assert.ok(tooltipProps.some((value: unknown) => typeof value === "string" && value.includes(pinB)));
-    assert.match(markup, /3 namespaces/);
+    assert.match(markup, /aria-label="Show all 3 namespaces"/);
+    const namespaceToggle = ui.getTestRenderedProps().find(({ props }: { props: { "aria-label"?: string } }) => props["aria-label"] === "Show all 3 namespaces").props;
+    assert.equal(namespaceToggle["aria-expanded"], false);
+    namespaceToggle.onClick();
+    const expandedNamespaces = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    assert.match(expandedNamespaces, /class="ns-list">alpha, beta, gamma<\/span>/);
+    assert.equal(displayState.namespaceExpanded.has(groups[0].id), true);
     assert.equal(scopeChanges, 0);
     assert.equal(state.namespace.get(), "");
   });
 
-  await t.test("collapsed and expanded image rows and Pod details show badges beside requested images", () => {
+  await t.test("native image tables preserve full IDs, registry context and node runtime in expanded rows", async () => {
     const image = "public.ecr.aws/example/api:v1";
+    const imageID = `runtime-image-ID-${"x".repeat(256)}<img onerror="unsafe"> & 'quoted'`;
+    const escapedImageID = `runtime-image-ID-${"x".repeat(256)}&lt;img onerror=&quot;unsafe&quot;&gt; &amp; &#x27;quoted&#x27;`;
     const pod = {
       metadata: { uid: "pod-a", name: "api-0", namespace: "production" },
       spec: { nodeName: "worker-a", containers: [{ name: "app", image }] },
-      status: { containerStatuses: [{ name: "app", imageID: "runtime-image-ID", state: { running: {} }, ready: true }] },
+      status: { containerStatuses: [{ name: "app", imageID, state: { running: {} }, ready: true }] },
     };
     const otherPod = { ...pod, metadata: { ...pod.metadata, uid: "pod-b", name: "api-1" }, spec: { ...pod.spec, nodeName: "worker-b" } };
     const unknownPod = { ...pod, metadata: { ...pod.metadata, uid: "pod-c", name: "api-2" }, spec: { ...pod.spec, nodeName: "worker-unknown" } };
@@ -434,7 +576,7 @@ test("registry badges keep visibility honest and details available from the keyb
     const state = {
       view: computed(() => ({ status: "ready", sizeStatus: "unavailable", groups: [group], imageCount: 1, containerCount: 3,
         namespaceCount: 1, multipleCount: 0, error: "", sizeError: "", namespaces: ["production"],
-        workloadStatus: "ready", workloadLabels: new Map(), workloads: [] })),
+        workloadStatus: "ready", workloadLabels: new Map(), matchFields: new Map(), workloads: [] })),
       search: observable.box(""), tagOrPin: observable.box(""), pinning: observable.box("all"),
       namespaceDraft: observable.box(""), namespaceError: observable.box(""), namespace: observable.box(""),
       runningOnly: observable.box(true), multipleOnly: observable.box(false), multipleNamespacesOnly: observable.box(false), workloadType: observable.box(""), workloadID: observable.box(""),
@@ -444,25 +586,45 @@ test("registry badges keep visibility honest and details available from the keyb
       setRunningOnly: noop, setMultipleOnly: noop, setMultipleNamespacesOnly: noop, selectNamespace: noop, selectWorkloadType: noop,
       selectWorkload: noop, toggleExpanded: noop, sortBy: noop,
     };
+    const copied: string[] = [];
+    const copyFeedback = observable.box<{ value: string; status: "copied" | "failed" } | undefined>(undefined, { deep: false });
     ui.setTestInjections(new Map([
-      [ui.imagesStateInjectable, state],
-      [ui.imageActionsInjectable, { feedback: observable.box(""), copyID: async () => {}, openPod: async () => {} }],
+      [ui.imagesStateInjectable, compactState(state)],
+      [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback,
+        copyID: async (value: string) => { copied.push(value); runInAction(() => copyFeedback.set({ value, status: "copied" })); }, openPod: async () => {} }],
       [ui.describePodImagesInjectable, () => (resource: typeof pod) => ui.collectContainerImages([resource], false)],
       [ui.clusterHeadingInjectable, computed(() => "Production")],
       [ui.registryDetailsInjectable, ui.describeRegistry],
       [ui.nodeRuntimeDetailsInjectable, runtimeDetails],
     ]));
     const collapsed = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    assert.match(collapsed, /<table class="results" aria-label="Container images"/);
+    assert.doesNotMatch(collapsed, /class="detail-row"/);
     assert.match(collapsed, />Public</);
     assert.ok(collapsed.includes(ui.describeRegistry(image).providerLabel));
-    assert.match(collapsed, /runtime-image-ID/);
+    assert.ok(collapsed.includes(escapedImageID), "an unfamiliar long ID stays complete and escaped in the summary");
+    ui.resetTestRenderedProps();
     runInAction(() => state.expanded.add(group.id));
     const expanded = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
     assert.equal([...expanded.matchAll(/>Public</g)].length, 2, "expanded usage repeats the requested image's registry context");
-    assert.match(expanded, /Requested image/);
-    assert.match(expanded, /<code\b[^>]*aria-label="Full runtime image ID"[^>]*>runtime-image-ID<\/code>/);
+    assert.match(expanded, /<tr class="detail-row"[^>]*><td colSpan="6">/i);
+    assert.match(expanded, /class="detail-label">Reference<\/span>/);
+    assert.ok(expanded.includes(`aria-label="Full runtime image ID">${escapedImageID}</code>`), "expanded IDs keep the complete escaped text");
     assert.doesNotMatch(expanded, /<input\b[^>]*aria-label="Full runtime image ID"/i);
-    assert.match(expanded, />Node<\/span><span>Node runtime<\/span><span>State<\/span>/, "node runtime has its own usage column");
+    assert.match(expanded, /<th scope="col">Node<\/th><th scope="col">Node runtime<\/th><th scope="col">State<\/th>/, "node runtime has its own usage column");
+    const copyButton = ui.getTestRenderedProps().find(({ props }: { props: { "aria-label"?: string } }) => props["aria-label"] === "Copy full runtime image ID").props;
+    assert.equal(copyButton.disabled, false);
+    await copyButton.onClick();
+    assert.deepEqual(copied, [imageID], "native table copy preserves the exact long raw ID, including markup-like characters");
+    const copiedMarkup = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    assert.equal([...copiedMarkup.matchAll(/>Copied<\/span>/g)].length, 2, "only the summary and expanded buttons for this same value report success");
+    runInAction(() => copyFeedback.set({ value: "another runtime ID", status: "copied" }));
+    const unrelatedCopy = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    assert.doesNotMatch(unrelatedCopy, />Copied<\/span>/);
+    runInAction(() => copyFeedback.set({ value: imageID, status: "failed" }));
+    const failedCopy = renderToStaticMarkup(createElement(ui.ImagesView, { clusterId: "cluster-a" }));
+    assert.equal([...failedCopy.matchAll(/>Copy failed<\/span>/g)].length, 2);
+    assert.doesNotMatch(failedCopy, />Copied<\/span>/);
     assert.match(expanded, /class="lie-node-runtime lie-wrap">containerd 1\.7\.24<\/code>/);
     assert.match(expanded, /class="lie-node-runtime lie-wrap">cri-o 1\.30\.6<\/code>/);
     assert.match(expanded, /class="lie-node-runtime lie-wrap">Unavailable<\/code>/);
@@ -495,7 +657,7 @@ test("registry badges keep visibility honest and details available from the keyb
       status: { containerStatuses: [{ name: "app", imageID, state: { running: {} }, ready: true }] },
     };
     ui.setTestInjections(new Map([
-      [ui.imageActionsInjectable, { feedback: observable.box(""), copyID: async () => {} }],
+      [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {} }],
       [ui.describePodImagesInjectable, () => (resource: typeof pod) => ui.collectContainerImages([resource], false)],
       [ui.registryDetailsInjectable, ui.describeRegistry],
       [ui.nodeRuntimeDetailsInjectable, runtimeDetails],

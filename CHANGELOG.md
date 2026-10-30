@@ -2,6 +2,13 @@
 
 What changed in each version of this extension, newest first.
 
+## 0.3.0
+
+- Match the approved Image Explorer design with a compact header, search toolbar, collapsible Scope panel, and dense image table.
+- Show removable filter chips, a full reset, scoped keyboard search controls, and useful empty-state filter suggestions.
+- Restyle expanded image usages while preserving wrapped runtime IDs, copying, Pod navigation, runtime versions, and visibility evidence.
+- Add loading skeletons and keep wide tables scrollable within smaller Lens panes.
+
 ## 0.2.1
 
 - Reuse image-size and workload indexes and existing image groups to reduce repeated work during updates and searches.

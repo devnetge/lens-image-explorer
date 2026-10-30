@@ -145,7 +145,7 @@ test("the actual ImagesView renders safely before and after async cluster metada
   const state = {
     view: computed(() => ({ status: "loading", sizeStatus: "unavailable", groups: [], imageCount: 0,
       containerCount: 0, namespaceCount: 0, multipleCount: 0, error: "", sizeError: "",
-      namespaces: ["production", "staging"], workloadStatus: "ready", workloadLabels: new Map(),
+      namespaces: ["production", "staging"], workloadStatus: "ready", workloadLabels: new Map(), matchFields: new Map(),
       workloads: [
         { id: "production/Deployment/api-uid", kind: "Deployment", name: "api", namespace: "production" },
         { id: "production/StatefulSet/database-uid", kind: "StatefulSet", name: "database", namespace: "production" },
@@ -155,13 +155,17 @@ test("the actual ImagesView renders safely before and after async cluster metada
     namespaceDraft: observable.box(""), namespaceError: observable.box(""),
     namespace: observable.box(""), runningOnly: observable.box(true), multipleOnly: observable.box(false), multipleNamespacesOnly: observable.box(false),
     workloadType: observable.box(""), workloadID: observable.box(""),
+    namespaceManual: observable.box(false), scopeOpen: observable.box(false), namespaceExpanded: observable.set<string>(),
+    activeFilters: computed(() => []), scopeCount: computed(() => 0), showReset: computed(() => false), relaxedFilters: computed(() => []),
+    expanded: observable.set<string>(), sort: observable.box("image"), descending: observable.box(false),
+    toggleScope: noop, toggleNamespaces: noop, toggleMultipleOnly: noop, clearFilter: noop, resetAllFilters: noop, sortBy: noop,
     refresh: noop, setSearch: noop, setTagOrPin: noop, selectPinning: noop, clearSearchFilters: noop,
     setNamespaceDraft: noop, applyNamespace: noop,
     setRunningOnly: noop, setMultipleOnly: noop, setMultipleNamespacesOnly: noop, selectNamespace: noop, selectWorkloadType: noop, selectWorkload: noop,
   };
   view.setTestInjections(new Map([
     [view.imagesStateInjectable, state],
-    [view.imageActionsInjectable, { feedback: observable.box("") }],
+    [view.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined) }],
     [view.clusterHeadingInjectable, heading],
     [view.nodeRuntimeDetailsInjectable, () => computed(() => ({ available: false, label: "Unavailable", runtime: "", version: "", reported: "", reason: "Node runtime is loading." }))],
     // These emulate the host's asynchronous contracts if the view regresses to using them directly.
@@ -170,22 +174,23 @@ test("the actual ImagesView renders safely before and after async cluster metada
   ]));
 
   const pending = renderToStaticMarkup(createElement(view.ImagesView, { clusterId: "cluster-a" }));
-  assert.match(pending, /Kubernetes cluster \/ Workloads/);
+  assert.match(pending, /class="lx-crumb"><span>Kubernetes cluster<\/span><span>\/<\/span><span>Workloads<\/span>/);
   assert.match(pending, /Image Explorer/);
   assert.match(pending, /aria-label="Namespace"/);
   assert.match(pending, /<option value="production">production<\/option>/);
   assert.match(pending, /<option value="staging">staging<\/option>/);
   assert.match(pending, /aria-label="Workload type"/);
-  assert.match(pending, /<option value="Deployment">Deployments<\/option>/);
-  assert.match(pending, /<option value="StatefulSet">StatefulSets<\/option>/);
+  assert.match(pending, /<option value="Deployment">Deployment<\/option>/);
+  assert.match(pending, /<option value="StatefulSet">StatefulSet<\/option>/);
   assert.match(pending, /aria-label="Workload"/);
-  assert.match(pending, /Deployment\/api · production/);
-  assert.match(pending, /StatefulSet\/database · production/);
+  assert.match(pending, /api \(Deployment\) · production/);
+  assert.match(pending, /database \(StatefulSet\) · production/);
+  assert.match(pending, /<table class="results" aria-label="Container images" aria-busy="true">/);
   assert.doesNotMatch(pending, /\[object Promise\]/);
 
   name.resolve(computed(() => "Production"));
   await Promise.resolve();
 
   const ready = renderToStaticMarkup(createElement(view.ImagesView, { clusterId: "cluster-a" }));
-  assert.match(ready, /Production \/ Workloads/);
+  assert.match(ready, /class="lx-crumb"><span>Production<\/span><span>\/<\/span><span>Workloads<\/span>/);
 });

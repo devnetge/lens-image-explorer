@@ -1,6 +1,6 @@
 {
   "name": "lens-image-explorer",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Inspect container images, registry providers, visibility, runtimes, hashes and sizes in Lens.",
   "keywords": [
     "lens-extension"

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { autorun, computed, observable, runInAction, type IComputedValue } from "mobx";
+import { createContainer, getInjectable2 } from "@k8slens/injectable";
+import { navigateToKubeResourceDetailsInjectionToken } from "@k8slens/details-panel-contracts";
 import type { Subscribable, Subscription } from "@k8slens/subscribable";
 import type { ChangeEvent, FormEvent } from "react";
-import { createImagesState } from "../src/images-state.injectable";
-import type { PodLike } from "../src/image-model";
+import { createImagesState, imageActionsInjectable } from "../src/images-state.injectable";
+import { collectContainerImages, type PodLike } from "../src/image-model";
 import type { NodeLike } from "../src/image-sizes";
 import type { NamespaceLike, OwnerReferenceLike, ReplicaSetLike, WorkloadPodLike, WorkloadResourceLike } from "../src/workload-model";
 
@@ -100,6 +102,23 @@ function controller(kind: string, name: string, uid: string): OwnerReferenceLike
 function controlledPod(name: string, namespace: string, image: string, owner?: OwnerReferenceLike): WorkloadPodLike {
   const resource = pod(name, namespace, image);
   return { ...resource, metadata: { ...resource.metadata, ownerReferences: owner ? [owner] : [] } };
+}
+
+function actionsForTest(navigate = async () => {}) {
+  const navigation = getInjectable2({ id: "test-image-navigation", injectionToken: navigateToKubeResourceDetailsInjectionToken,
+    instantiate: () => () => navigate });
+  const di = createContainer("image-copy-feedback-test");
+  di.register(navigation, imageActionsInjectable);
+  return di.inject2(imageActionsInjectable)("cluster-a");
+}
+
+function clipboardForTest(t: TestContext, writeText: (value: string) => Promise<void>) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText } } });
+  t.after(() => {
+    if (previous) Object.defineProperty(globalThis, "navigator", previous);
+    else Reflect.deleteProperty(globalThis, "navigator");
+  });
 }
 
 test("pod watches belong to observed views and release when the last viewer leaves", async (t) => {
@@ -742,4 +761,363 @@ test("namespace and workload options are reused across display filters and follo
   assert.equal(current.workloads[0].name, "worker");
   state.selectWorkloadType(selectValue("StatefulSet"));
   assert.deepEqual(current.workloads, []);
+});
+
+test("active chips and scope counts follow the reference design's distinct baseline semantics", () => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  assert.equal(state.scopeOpen.get(), false);
+  assert.equal(state.scopeCount.get(), 0);
+  assert.equal(state.hasActiveFilters.get(), true, "the baseline running-only constraint is visible as a chip");
+  assert.equal(state.showReset.get(), false, "the baseline does not need a reset action");
+  assert.deepEqual(state.activeFilters.get(), [{ id: "runningOnly", label: "Running containers only" }]);
+
+  state.setSearch(inputValue(" api "));
+  state.setTagOrPin(inputValue(" stable "));
+  state.selectPinning(selectValue("pinned"));
+  assert.deepEqual(state.activeFilters.get(), [
+    { id: "search", label: "Search", value: "api" }, { id: "tagOrPin", label: "Tag / pin", value: "stable" },
+    { id: "pinning", label: "Pinning", value: "Digest pinned" }, { id: "runningOnly", label: "Running containers only" },
+  ]);
+  assert.equal(state.scopeCount.get(), 0, "search fields and pinning are outside the Scope count");
+  assert.equal(state.showReset.get(), true);
+  state.clearSearchFilters();
+  state.clearFilter("runningOnly");
+  assert.equal(state.runningOnly.get(), false);
+  assert.equal(state.hasActiveFilters.get(), false);
+  assert.equal(state.scopeCount.get(), 1, "including non-running containers differs from the baseline");
+  assert.equal(state.showReset.get(), true);
+  state.resetAllFilters();
+  assert.equal(state.runningOnly.get(), true);
+  assert.equal(state.showReset.get(), false);
+  state.setSearch(inputValue("   "));
+  assert.equal(state.activeFilters.get().some((chip) => chip.id === "search"), false);
+  assert.equal(state.showReset.get(), true, "reset still clears uncommitted whitespace in the input");
+  assert.equal(pods.subscriptions.length, 0);
+});
+
+test("individual chip actions preserve unrelated filters, sorting and expanded image state", () => {
+  const state = createImagesState(() => podSource().source);
+  state.setSearch(inputValue("api"));
+  state.setTagOrPin(inputValue("v1"));
+  state.selectPinning(selectValue("unpinned"));
+  state.setMultipleOnly({ currentTarget: { checked: true } } as ChangeEvent<HTMLInputElement>);
+  state.setMultipleNamespacesOnly({ currentTarget: { checked: true } } as ChangeEvent<HTMLInputElement>);
+  state.sortBy("count");
+  state.toggleExpanded("example/api:v1");
+  state.toggleNamespaces("example/api:v1");
+
+  state.clearFilter("search");
+  assert.equal(state.search.get(), "");
+  assert.equal(state.tagOrPin.get(), "v1");
+  assert.equal(state.pinning.get(), "unpinned");
+  state.clearFilter("tagOrPin");
+  assert.equal(state.tagOrPin.get(), "");
+  assert.equal(state.pinning.get(), "unpinned");
+  state.clearFilter("pinning");
+  assert.equal(state.pinning.get(), "all");
+  assert.equal(state.multipleOnly.get(), true);
+  state.clearFilter("multipleOnly");
+  assert.equal(state.multipleOnly.get(), false);
+  assert.equal(state.multipleNamespacesOnly.get(), true);
+  state.clearFilter("multipleNamespacesOnly");
+  assert.equal(state.multipleNamespacesOnly.get(), false);
+  assert.equal(state.runningOnly.get(), true);
+  assert.equal(state.sort.get(), "count");
+  assert.equal(state.descending.get(), true);
+  assert.equal(state.expanded.has("example/api:v1"), true);
+  assert.equal(state.namespaceExpanded.has("example/api:v1"), true);
+  state.toggleNamespaces("example/api:v1");
+  assert.equal(state.namespaceExpanded.size, 0);
+  state.toggleMultipleOnly();
+  assert.equal(state.multipleOnly.get(), true);
+  state.toggleMultipleOnly();
+  assert.equal(state.multipleOnly.get(), false);
+});
+
+test("clearing scope chips restarts only scoped watches and clears dependent workload selection", (t) => {
+  const pods = podSource();
+  const nodes = resourceSource<NodeLike>();
+  const namespaces = resourceSource<NamespaceLike>();
+  const replicas = resourceSource<ReplicaSetLike>();
+  const deployments = resourceSource<WorkloadResourceLike>();
+  const statefulSets = resourceSource<WorkloadResourceLike>();
+  const requested: Array<string | undefined> = [];
+  const state = createImagesState((namespace) => { requested.push(namespace); return pods.source; }, () => nodes.source, {
+    namespaces: () => namespaces.source, replicaSets: () => replicas.source,
+    deployments: () => deployments.source, statefulSets: () => statefulSets.source,
+  });
+  state.selectNamespace(selectValue("production"));
+  state.selectWorkloadType(selectValue("Deployment"));
+  state.selectWorkload(selectValue("selected-workload"));
+  const dispose = autorun(() => { state.view.get(); });
+  t.after(dispose);
+  state.toggleExpanded("example/api:v1");
+
+  state.clearFilter("namespace");
+  assert.equal(state.namespace.get(), "");
+  assert.equal(state.namespaceDraft.get(), "");
+  assert.equal(state.workloadID.get(), "");
+  assert.equal(state.workloadType.get(), "Deployment", "the unrelated type constraint remains selected");
+  assert.equal(state.expanded.size, 0);
+  assert.deepEqual(requested, ["production", undefined]);
+  for (const source of [pods, replicas, deployments, statefulSets]) {
+    assert.equal(source.subscriptions.length, 2);
+    assert.equal(source.subscriptions[0].disposals, 1);
+    assert.equal(source.subscriptions[1].claims, 1);
+  }
+  for (const source of [nodes, namespaces]) assert.equal(source.subscriptions.length, 1);
+
+  state.selectWorkload(selectValue("another-workload"));
+  state.clearFilter("workloadID");
+  assert.equal(state.workloadID.get(), "");
+  assert.equal(state.workloadType.get(), "Deployment");
+  state.selectWorkload(selectValue("another-workload"));
+  state.clearFilter("workloadType");
+  assert.equal(state.workloadType.get(), "");
+  assert.equal(state.workloadID.get(), "");
+  state.toggleScope();
+  state.toggleScope();
+  assert.equal(state.scopeOpen.get(), false);
+  assert.equal(pods.subscriptions.length, 2, "workload chips and progressive disclosure do not restart watches");
+  dispose();
+  for (const source of [pods, nodes, namespaces, replicas, deployments, statefulSets]) assert.equal(source.source.isLive(), false);
+});
+
+test("reset all restores defaults while preserving sort and the open Scope panel", () => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  state.toggleScope();
+  state.selectNamespace(selectValue("production"));
+  state.selectWorkloadType(selectValue("StatefulSet"));
+  state.selectWorkload(selectValue("selected-workload"));
+  state.setSearch(inputValue("api"));
+  state.setTagOrPin(inputValue("v1"));
+  state.selectPinning(selectValue("pinned"));
+  state.setRunningOnly({ currentTarget: { checked: false } } as ChangeEvent<HTMLInputElement>);
+  state.setMultipleOnly({ currentTarget: { checked: true } } as ChangeEvent<HTMLInputElement>);
+  state.setMultipleNamespacesOnly({ currentTarget: { checked: true } } as ChangeEvent<HTMLInputElement>);
+  state.sortBy("size");
+  state.toggleExpanded("example/api:v1");
+  state.resetAllFilters();
+
+  assert.equal(state.showReset.get(), false);
+  assert.deepEqual(state.activeFilters.get(), [{ id: "runningOnly", label: "Running containers only" }]);
+  assert.equal(state.scopeCount.get(), 0);
+  assert.equal(state.namespaceManual.get(), false);
+  assert.equal(state.namespace.get(), "");
+  assert.equal(state.namespaceDraft.get(), "");
+  assert.equal(state.workloadID.get(), "");
+  assert.equal(state.workloadType.get(), "");
+  assert.equal(state.scopeOpen.get(), true);
+  assert.equal(state.sort.get(), "size");
+  assert.equal(state.descending.get(), true);
+  assert.equal(state.expanded.size, 0, "removing scope constraints clears scoped row expansion");
+  assert.equal(pods.subscriptions.length, 0);
+
+  state.toggleExpanded("example/api:v1");
+  state.setSearch(inputValue("api"));
+  state.resetAllFilters();
+  assert.equal(state.expanded.has("example/api:v1"), true, "a search-only reset leaves expanded rows intact");
+});
+
+test("manual namespace mode never requests a sentinel or incomplete draft before Apply", (t) => {
+  const pods = podSource();
+  const requested: Array<string | undefined> = [];
+  const state = createImagesState((namespace) => { requested.push(namespace); return pods.source; });
+  const dispose = autorun(() => { state.view.get(); });
+  t.after(dispose);
+  state.selectNamespace(selectValue("__manual__"));
+  assert.equal(state.namespaceManual.get(), true);
+  assert.equal(state.namespace.get(), "");
+  assert.deepEqual(requested, [undefined]);
+  state.setNamespaceDraft(inputValue("Bad/Name"));
+  state.applyNamespace({ preventDefault() {} } as FormEvent);
+  assert.ok(state.namespaceError.get());
+  assert.deepEqual(requested, [undefined]);
+  state.setNamespaceDraft(inputValue(" production "));
+  assert.deepEqual(requested, [undefined], "typing must not cause a namespace request per keystroke");
+  state.applyNamespace({ preventDefault() {} } as FormEvent);
+  assert.deepEqual(requested, [undefined, "production"]);
+  assert.equal(state.namespaceError.get(), "");
+  assert.equal(state.scopeCount.get(), 1);
+  assert.equal(state.activeFilters.get().find((chip) => chip.id === "namespace")?.value, "production (manual)");
+  state.clearSearchFilters();
+  assert.equal(state.namespaceManual.get(), true, "Clear search cannot clear manual scope");
+  state.clearFilter("namespace");
+  assert.equal(state.namespaceManual.get(), false);
+  assert.equal(state.namespaceDraft.get(), "");
+  assert.deepEqual(requested, [undefined, "production", undefined]);
+});
+
+test("empty results offer only effective local relaxations with exact counts and no new watches", async (t) => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  let current = state.view.get();
+  let relaxed = state.relaxedFilters.get();
+  const dispose = autorun(() => { current = state.view.get(); relaxed = state.relaxedFilters.get(); });
+  t.after(dispose);
+  assert.deepEqual(relaxed, [], "a loading view cannot offer speculative result counts");
+  let containerReads = 0;
+  const api = pod("api", "production", "example/api:v1");
+  const containers = api.spec!.containers;
+  Object.defineProperty(api.spec, "containers", { get: () => { containerReads += 1; return containers; } });
+  const waiting: PodLike = {
+    ...pod("api-waiting", "production", "example/api:v2"),
+    status: { containerStatuses: [{ name: "app", imageID: "runtime-waiting", state: { waiting: {} } }] },
+  };
+  pods.publish([api, pod("worker", "production", "example/worker:v2"), waiting]);
+  pods.subscriptions[0].resolve();
+  await Promise.resolve();
+  assert.deepEqual(relaxed, [], "a nonempty view does not need relaxation suggestions");
+  state.setSearch(inputValue("api"));
+  state.setTagOrPin(inputValue("v2"));
+  assert.equal(current.groups.length, 0);
+  assert.deepEqual(relaxed.map(({ id, count }) => [id, count]), [["search", 1], ["tagOrPin", 1], ["runningOnly", 1]]);
+  const reads = containerReads;
+  state.setSearch(inputValue("not-found"));
+  state.setSearch(inputValue("api"));
+  assert.equal(containerReads, reads, "broader running-state groups are reused across text edits");
+  state.clearFilter("runningOnly");
+  assert.equal(current.groups.length, 1);
+  assert.equal(current.groups[0].requestedImage, "example/api:v2");
+  assert.deepEqual(relaxed, []);
+  assert.equal(pods.subscriptions.length, 1);
+  assert.equal(pods.subscriptions[0].claims, 1);
+});
+
+test("scope relaxation counts clear dependent workload constraints without estimating another namespace", async (t) => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  state.selectNamespace(selectValue("production"));
+  let current = state.view.get();
+  let relaxed = state.relaxedFilters.get();
+  const dispose = autorun(() => { current = state.view.get(); relaxed = state.relaxedFilters.get(); });
+  t.after(dispose);
+  pods.publish([
+    controlledPod("api", "production", "example/api:v1", controller("StatefulSet", "api", "api-uid")),
+    controlledPod("worker", "production", "example/worker:v1", controller("StatefulSet", "worker", "worker-uid")),
+  ]);
+  pods.subscriptions[0].resolve();
+  await Promise.resolve();
+  state.selectWorkloadType(selectValue("Deployment"));
+  assert.equal(current.groups.length, 0);
+  assert.deepEqual(relaxed.map(({ id, count }) => [id, count]), [["workloadType", 2]]);
+  assert.equal(relaxed.some(({ id }) => id === "namespace"), false);
+  state.clearFilter("workloadType");
+  assert.equal(current.groups.length, 2);
+
+  state.selectWorkloadType(selectValue("StatefulSet"));
+  const api = current.workloads.find((workload) => workload.name === "api")!;
+  state.selectWorkload(selectValue(api.id));
+  assert.equal(state.activeFilters.get().find((chip) => chip.id === "workloadID")?.value, "api");
+  state.setSearch(inputValue("worker"));
+  assert.equal(current.groups.length, 0);
+  assert.deepEqual(relaxed.map(({ id, count }) => [id, count]), [["search", 1], ["workloadType", 1], ["workloadID", 1]]);
+  state.clearFilter("workloadID");
+  assert.equal(current.groups.length, 1);
+  assert.equal(current.groups[0].requestedImage, "example/worker:v1");
+  assert.equal(state.namespace.get(), "production");
+  assert.equal(state.workloadType.get(), "StatefulSet");
+  assert.equal(pods.subscriptions.length, 1, "all suggestions use only the already observed namespace's Pod snapshot");
+});
+
+test("copy feedback follows the exact value, replaces its old timer and expires after 1500 ms", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const copied: string[] = [];
+  clipboardForTest(t, async (value) => { copied.push(value); });
+  const actions = actionsForTest();
+  const dispose = autorun(() => { actions.copyFeedback.get(); });
+  t.after(dispose);
+  await actions.copyID("example/api:v1");
+  assert.deepEqual(actions.copyFeedback.get(), { value: "example/api:v1", status: "copied" });
+  assert.equal(actions.feedback.get(), "Copied to clipboard.");
+  t.mock.timers.tick(1000);
+  await actions.copyID("runtime-image-id");
+  assert.deepEqual(copied, ["example/api:v1", "runtime-image-id"]);
+  t.mock.timers.tick(500);
+  assert.deepEqual(actions.copyFeedback.get(), { value: "runtime-image-id", status: "copied" }, "the old expiry cannot clear the newer button feedback");
+  t.mock.timers.tick(999);
+  assert.ok(actions.copyFeedback.get());
+  t.mock.timers.tick(1);
+  assert.equal(actions.copyFeedback.get(), undefined);
+  assert.equal(actions.feedback.get(), "");
+});
+
+test("copy failure remains generic and copy expiry never clears a navigation message", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  clipboardForTest(t, async () => { throw new Error("example-private-clipboard-error"); });
+  const actions = actionsForTest(async () => { throw new Error("Unable to open the Pod."); });
+  const dispose = autorun(() => { actions.copyFeedback.get(); });
+  t.after(dispose);
+  await actions.copyID("example/api:v1");
+  assert.deepEqual(actions.copyFeedback.get(), { value: "example/api:v1", status: "failed" });
+  assert.equal(actions.feedback.get(), "Select the value and use your keyboard to copy it.");
+  assert.doesNotMatch(actions.feedback.get(), /example-private-clipboard-error/);
+  await actions.openPod(collectContainerImages([pod("api", "production", "example/api:v1")])[0]);
+  t.mock.timers.tick(1500);
+  assert.equal(actions.copyFeedback.get(), undefined);
+  assert.equal(actions.feedback.get(), "Unable to open the Pod.");
+  dispose();
+  assert.equal(actions.feedback.get(), "Unable to open the Pod.");
+});
+
+test("last copy observer leaving releases feedback and blocks late clipboard completion", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let finish!: () => void;
+  clipboardForTest(t, () => new Promise<void>((resolve) => { finish = resolve; }));
+  const actions = actionsForTest();
+  const first = autorun(() => { actions.copyFeedback.get(); });
+  const pending = actions.copyID("example/api:v1");
+  first();
+  finish();
+  await pending;
+  assert.equal(actions.copyFeedback.get(), undefined);
+  assert.equal(actions.feedback.get(), "");
+  t.mock.timers.tick(1500);
+  assert.equal(actions.copyFeedback.get(), undefined);
+
+  const second = autorun(() => { actions.copyFeedback.get(); });
+  const completed = actions.copyID("example/api:v2");
+  finish();
+  await completed;
+  assert.equal(actions.copyFeedback.get()?.status, "copied");
+  second();
+  assert.equal(actions.copyFeedback.get(), undefined);
+  assert.equal(actions.feedback.get(), "");
+});
+
+test("usage-only search labels share search semantics and stay cached across local display filters", async (t) => {
+  const pods = podSource();
+  const state = createImagesState(() => pods.source);
+  let current = state.view.get();
+  const dispose = autorun(() => { current = state.view.get(); });
+  t.after(dispose);
+  const image = "example/api:v1";
+  pods.publish([{
+    metadata: { name: "pod-marker", namespace: "namespace-marker", uid: "api-uid" },
+    spec: { nodeName: "node-marker", containers: [{ name: "container-marker", image }] },
+    status: { containerStatuses: [{ name: "container-marker", image: "example/resolved-marker:v2", imageID: "runtime-marker", state: { running: {} } }] },
+  }]);
+  pods.subscriptions[0].resolve();
+  await Promise.resolve();
+  for (const [query, label] of [["POD-MARKER", "pod"], ["runtime-marker", "runtime ID"], ["resolved-marker", "reported image"],
+    ["container-marker", "container"], ["node-marker", "node"]]) {
+    state.setSearch(inputValue(` ${query} `));
+    assert.equal(current.groups.length, 1);
+    assert.deepEqual(current.matchFields.get(image), [label]);
+  }
+  const cached = current.matchFields;
+  state.sortBy("count");
+  state.setTagOrPin(inputValue("v1"));
+  assert.equal(current.matchFields, cached, "sorting and metadata filters do not rescan usage match fields");
+  state.clearFilter("tagOrPin");
+  for (const query of ["example/api", "v1", "namespace-marker"]) {
+    state.setSearch(inputValue(query));
+    assert.equal(current.groups.length, 1);
+    assert.equal(current.matchFields.has(image), false, "fields visible in the row do not need an extra match explanation");
+  }
+  state.clearFilter("search");
+  assert.equal(current.matchFields.size, 0);
+  assert.equal(pods.subscriptions.length, 1);
 });
