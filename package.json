@@ -1,7 +1,7 @@
 {
   "name": "lens-image-explorer",
-  "version": "0.3.0",
-  "description": "Inspect container images, registry providers, visibility, runtimes, hashes and sizes in Lens.",
+  "version": "0.4.1",
+  "description": "Inspect container images and investigate bounded, consolidated pod logs in Lens.",
   "keywords": [
     "lens-extension"
   ],
@@ -15,32 +15,34 @@
   ],
   "lensExtension": {
     "icon": "assets/icon.svg",
-    "banner": "assets/banner.svg"
+    "banner": "assets/banner.png"
   },
   "scripts": {
-    "build": "tsc --noEmit && node scripts/build.mjs",
+    "build": "lens-types-check && lens-extension-dependencies-check && node scripts/build.mjs",
     "test": "node scripts/test.mjs",
-    "clean": "node scripts/build.mjs --clean"
+    "clean": "node scripts/build.mjs --clean",
+    "prepublishOnly": "npm run build && lens-extension-publish-check"
   },
   "dependencies": {
-    "@k8slens/ask-ai-contracts": "^1.3.0",
-    "@k8slens/cluster-contracts": "^2.4.0",
-    "@k8slens/details-panel-components": "^1.0.2",
-    "@k8slens/details-panel-contracts": "^1.1.0",
-    "@k8slens/element-components": "^3.9.1",
-    "@k8slens/feature-core": "^7.5.2",
-    "@k8slens/icon": "^4.0.0",
-    "@k8slens/injectable": "^26.2.1",
-    "@k8slens/input-components": "^1.0.1",
-    "@k8slens/kubernetes-contracts": "^2.0.2",
-    "@k8slens/main-view-contracts": "^1.3.2",
-    "@k8slens/navigation-contracts": "^1.0.0",
-    "@k8slens/navigator-components": "^1.0.3",
-    "@k8slens/navigator-contracts": "^2.2.0",
-    "@k8slens/stylesheet-contracts": "^1.0.0",
-    "@k8slens/subscribable": "^1.2.0",
-    "@k8slens/tab-contracts": "^1.2.0",
-    "@k8slens/use-inject": "^1.0.2",
+    "@k8slens/ask-ai-contracts": "^1.4.2",
+    "@k8slens/cluster-contracts": "^2.5.2",
+    "@k8slens/details-panel-components": "^1.0.4",
+    "@k8slens/details-panel-contracts": "^1.2.2",
+    "@k8slens/element-components": "^3.11.0",
+    "@k8slens/feature-core": "^7.5.4",
+    "@k8slens/icon": "^4.1.3",
+    "@k8slens/injectable": "^26.4.0",
+    "@k8slens/input-components": "^1.0.3",
+    "@k8slens/kubectl-contracts": "^1.1.2",
+    "@k8slens/kubernetes-contracts": "^2.0.4",
+    "@k8slens/main-view-contracts": "^1.7.1",
+    "@k8slens/navigation-contracts": "^1.2.0",
+    "@k8slens/navigator-components": "^1.0.6",
+    "@k8slens/navigator-contracts": "^2.4.0",
+    "@k8slens/stylesheet-contracts": "^1.0.2",
+    "@k8slens/subscribable": "^1.2.2",
+    "@k8slens/tab-contracts": "^1.5.0",
+    "@k8slens/use-inject": "^1.0.4",
     "mobx": "^6.15.0",
     "mobx-react": "^9.2.1",
     "react": "^19.2.0"
@@ -48,7 +50,9 @@
   "devDependencies": {
     "@types/react": "^19.2.0",
     "esbuild": "^0.28.2",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "@k8slens/package-build": "^3.3.0",
+    "@k8slens/typescript": "^8.0.0"
   },
   "license": "MIT",
   "repository": {
@@ -57,5 +61,6 @@
   },
   "bugs": {
     "url": "https://github.com/devnetge/lens-image-explorer/issues"
-  }
+  },
+  "author": "Oto Abaiadze"
 }

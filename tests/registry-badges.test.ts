@@ -30,6 +30,9 @@ test("registry badges keep visibility honest and details available from the keyb
         export { RegistryBadges } from ${source("registry-badges.tsx")};
         export { describeRegistry } from ${source("registry-model.ts")};
         export { registryDetailsInjectable } from ${source("registry-details.injectable.ts")};
+        export { openImageLogsInjectable } from ${source("logs-navigation.injectable.tsx")};
+        export { LogsView } from ${source("logs-view.tsx")};
+        export { createLogsState, logsStateInjectable } from ${source("logs-state.injectable.ts")};
         export { ImagesView, FullImageID } from ${source("images-view.tsx")};
         export { PodImages, PodRuntimeImageID } from ${source("pod-images.injectable.tsx")};
         export { createImagesState, imagesStateInjectable, imageActionsInjectable, describePodImagesInjectable } from ${source("images-state.injectable.ts")};
@@ -288,6 +291,7 @@ test("registry badges keep visibility honest and details available from the keyb
       selectNamespace: noop, selectWorkloadType: noop, selectWorkload: noop,
     };
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imagesStateInjectable, compactState(state)], [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined) }],
       [ui.clusterHeadingInjectable, computed(() => "Production")],
     ]));
@@ -351,6 +355,7 @@ test("registry badges keep visibility honest and details available from the keyb
     subtest.after(dispose);
     await Promise.resolve();
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imagesStateInjectable, state],
       [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {}, openPod: async () => {} }],
       [ui.clusterHeadingInjectable, computed(() => "Synthetic cluster")],
@@ -431,6 +436,7 @@ test("registry badges keep visibility honest and details available from the keyb
     subtest.after(autorun(() => state.view.get()));
     await Promise.resolve();
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imagesStateInjectable, state],
       [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {}, openPod: async () => {} }],
       [ui.clusterHeadingInjectable, computed(() => "Synthetic cluster")], [ui.registryDetailsInjectable, ui.describeRegistry],
@@ -530,6 +536,7 @@ test("registry badges keep visibility honest and details available from the keyb
     };
     const displayState = compactState(state);
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imagesStateInjectable, displayState], [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {} }],
       [ui.clusterHeadingInjectable, computed(() => "Production")], [ui.registryDetailsInjectable, ui.describeRegistry],
     ]));
@@ -589,6 +596,7 @@ test("registry badges keep visibility honest and details available from the keyb
     const copied: string[] = [];
     const copyFeedback = observable.box<{ value: string; status: "copied" | "failed" } | undefined>(undefined, { deep: false });
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imagesStateInjectable, compactState(state)],
       [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback,
         copyID: async (value: string) => { copied.push(value); runInAction(() => copyFeedback.set({ value, status: "copied" })); }, openPod: async () => {} }],
@@ -657,6 +665,7 @@ test("registry badges keep visibility honest and details available from the keyb
       status: { containerStatuses: [{ name: "app", imageID, state: { running: {} }, ready: true }] },
     };
     ui.setTestInjections(new Map([
+      [ui.openImageLogsInjectable, () => async () => {}],
       [ui.imageActionsInjectable, { feedback: observable.box(""), copyFeedback: observable.box(undefined), copyID: async () => {} }],
       [ui.describePodImagesInjectable, () => (resource: typeof pod) => ui.collectContainerImages([resource], false)],
       [ui.registryDetailsInjectable, ui.describeRegistry],
@@ -673,4 +682,34 @@ test("registry badges keep visibility honest and details available from the keyb
     assert.match(empty, /data-lens-component="NoItemsDetailItem"/);
     assert.match(empty, /No container images reported\./);
   });
+  await t.test("Logs view renders bounded rows, escaped messages, filters, coverage and details", async () => {
+    const source = (value: unknown[]) => ({ isLive: () => true, subscribe: () => ({ value: Promise.resolve(computed(() => value)), claim() {}, dispose() {}, refresh() {} }) });
+    const pods = source([{ metadata: { uid: "p", name: "api-0", namespace: "demo" }, spec: { containers: [{ name: "api", image: "example/api:1" }] }, status: { containerStatuses: [{ name: "api", state: { running: {} } }] } }]);
+    const state = ui.createLogsState(async () => Array.from({ length: 130 }, (_, i) => `2026-10-30T08:00:00Z INFO <script>literal-${i}</script>\n`).join(""), () => pods, () => source([]));
+    const release = autorun(() => state.view.get());
+    try {
+      await Promise.resolve(); await Promise.resolve();
+      await state.refresh();
+      ui.setTestInjections(new Map([[ui.logsStateInjectable, state], [ui.clusterHeadingInjectable, computed(() => "Example cluster")]]));
+      let markup = renderToStaticMarkup(createElement(ui.LogsView, { clusterId: "cluster-a" }));
+      assert.match(markup, /Logs Explorer/);
+      assert.match(markup, /Search loaded logs/);
+      assert.match(markup, /Loaded logs/);
+      assert.match(markup, /1 \/ 1 readable containers/);
+      assert.equal((markup.match(/class="lle-row lle-logrow/g) ?? []).length, 100);
+      assert.doesNotMatch(markup, /<script>/);
+      assert.match(markup, /&lt;script&gt;literal/);
+      assert.match(markup, /Page 1 \/ 2/);
+      state.select(state.snapshot.get().entries[0]);
+      markup = renderToStaticMarkup(createElement(ui.LogsView, { clusterId: "cluster-a" }));
+      assert.match(markup, /aria-label="Log entry details"/);
+      assert.match(markup, /Copy raw message/);
+      assert.match(markup, /Nearby loaded lines/);
+      state.setFilter("text", "no-such-entry");
+      markup = renderToStaticMarkup(createElement(ui.LogsView, { clusterId: "cluster-a" }));
+      assert.match(markup, /No matching log entries/);
+      assert.match(markup, /Clear all/);
+    } finally { release(); }
+  });
+
 });

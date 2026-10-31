@@ -2,6 +2,29 @@
 
 What changed in each version of this extension, newest first.
 
+## 0.4.1
+
+- Align Lens dependencies with the host and add type, compatibility and prepublication checks.
+
+- Restore the original lens-image-explorer package identity while retaining Image & Logs Explorer branding and all log features.
+
+- Allow up to 60 seconds per source for hour/day log reads and keep refreshes serialized through cancellation.
+
+- Merge refreshed logs without resetting the reading position or replacing unchanged rows; retain logs from temporarily failed sources within memory limits.
+
+## 0.4.0
+
+- Use the updated Image & Logs Explorer artwork as the extension banner.
+
+- Brand the extension as Image & Logs Explorer with a new cube-and-log icon and informative banner.
+
+- Highlight log loading with green primary buttons and a larger initial load action.
+
+- Add Workloads → Logs with image/workload scope, search, facets, loaded-log timeline, source coverage and entry details.
+- Bound collection concurrency, source count, line/byte limits, retained log memory and rendered rows; cancel requests when scope or view changes.
+- Offer explicit snapshot auto-refresh with pause-on-inspect and two read-only Ask AI queries for loaded logs and source coverage.
+- Use bounded snapshots rather than streaming; collection gaps and partial history are shown explicitly.
+
 ## 0.3.0
 
 - Match the approved Image Explorer design with a compact header, search toolbar, collapsible Scope panel, and dense image table.

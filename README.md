@@ -1,6 +1,6 @@
-# Lens Image Explorer
+# Image & Logs Explorer
 
-Inspect the container images running in your Kubernetes clusters, with readable hashes, full runtime image IDs, and image sizes in Lens.
+Inspect container images and investigate consolidated pod logs in Lens, with runtime IDs, image sizes, source coverage, search and filtering.
 
 ## Features
 
@@ -20,7 +20,7 @@ Inspect the container images running in your Kubernetes clusters, with readable 
 
 ## Install
 
-[Open Lens Image Explorer in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3Dlens-image-explorer).
+[Open Image & Logs Explorer in Lens](https://app.k8slens.dev/lens-launcher?c=lens%3A%2F%2Fapp%2Fopen%2Fextension%3Fname%3Dlens-image-explorer).
 
 ## Usage
 
@@ -63,3 +63,13 @@ What changed in each version is in [CHANGELOG.md](./CHANGELOG.md).
 ## License
 
 [MIT](./LICENSE).
+
+## Logs Explorer
+
+Open **Workloads → Logs**, or choose **Logs** beside an image in Image Explorer. Select a namespace, observed Deployment/StatefulSet, or image and click **Load / Refresh**. Filter the loaded entries by text, JSON `field:value`, namespace, pod, container, image, severity, or a timeline bucket. Open an entry for its message, source metadata and nearby loaded lines; click metadata values to filter. Use `/` to focus search and Escape to close details.
+
+The view reads Kubernetes pod-log snapshots using your existing cluster access. It attempts up to 20 containers with three requests at a time, reads at most 400 lines / 128 KB per container, and keeps at most 3,000 entries / 4 MB of message text. Results render in pages of 100. Source coverage lists access failures and limits; narrow your scope if containers were excluded. Severity is inferred only from a recognized level field or prefix; otherwise it is **Unknown**. Each physical log line remains separate.
+
+**Auto-refresh** loads a new bounded snapshot 10 seconds after the previous load completes. Reads never overlap, including while cancellation settles. Hour/day queries allow up to 60 seconds per container (shorter ranges: 15 seconds). It is off by default and pauses when you inspect, scroll through or page the results. It merges new entries into the retained buffer while preserving your page and selected entry, and may miss lines during bursts; it is not a continuous stream or a historical log archive. Leaving the view releases resources and clears loaded messages. Retrieval ranges are limited by the logs the node still retains.
+
+From any Ask AI conversation, ask it to **search logs already loaded in Logs Explorer**, or **summarize the loaded log source coverage**. These read-only queries do not start collection or change view filters. Search returns at most 50 messages, capped at 2,048 characters each. Coverage returns counts and source failures without message bodies.

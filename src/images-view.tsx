@@ -1,3 +1,4 @@
+import { openImageLogsInjectable } from "./logs-navigation.injectable";
 import { Code, Div } from "@k8slens/element-components";
 import { ContentCopyIcon } from "@k8slens/icon";
 import { PlainButton } from "@k8slens/input-components";
@@ -89,6 +90,7 @@ const ImageRow = observer(({ group, clusterId }: { group: SizedImageGroup; clust
   const state = useSyncInject(imagesStateInjectable, clusterId);
   const actions = useSyncInject(imageActionsInjectable, clusterId);
   const registry = useSyncInject(registryDetailsInjectable, group.requestedImage);
+  const openLogs = useSyncInject(openImageLogsInjectable, clusterId);
   const expanded = state.expanded.has(group.id);
   const detailID = `lie-detail-${clusterId}-${group.id}`;
   const variants = group.variants.filter((variant) => variant.imageID);
@@ -99,7 +101,7 @@ const ImageRow = observer(({ group, clusterId }: { group: SizedImageGroup; clust
       <button type="button" className="expander" aria-expanded={expanded} aria-controls={detailID} aria-label={`${expanded ? "Collapse" : "Expand"} ${group.requestedImage}`}
         onClick={() => state.toggleExpanded(group.id)}><ImageIcon name="chevron" /></button>
       <span className="reg-mark" role="img" aria-label={registry.providerLabel} title={registry.providerLabel}>{registryMarks[registry.provider] || "?"}</span>
-      <div className="img-text"><div className="img-meta"><span className="img-name">{registry.repository || "Unrecognized image reference"}</span><Visibility details={registry} /></div>
+      <div className="img-text"><div className="img-meta"><span className="img-name">{registry.repository || "Unrecognized image reference"}</span><Visibility details={registry} /><button type="button" className="btn-text" aria-label={`Open logs for ${group.requestedImage}`} onClick={() => void openLogs(group.requestedImage).catch(() => undefined)}>Logs</button></div>
         <div className="img-host" title={group.requestedImage}>{registry.registry || "Registry unavailable"}</div>
         {!!state.view.get().matchFields.get(group.id)?.length && <div className="img-match">Matched on {state.view.get().matchFields.get(group.id)!.join(", ")}</div>}
       </div>
