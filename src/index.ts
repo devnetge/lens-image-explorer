@@ -10,9 +10,14 @@ import * as imageSearchQuery from "./image-search-query.injectable";
 import * as nodeRuntime from "./node-runtime.injectable";
 import * as nodeRuntimeQuery from "./node-runtime-query.injectable";
 
+import * as logsState from "./logs-state.injectable";
+import * as logsNavigation from "./logs-navigation.injectable";
+import * as logsStyles from "./logs-styles.injectable";
+import * as logsQueries from "./logs-query.injectable";
+
 export const luminaInfrabotLinkFeature = getFeature({
   id: "lumina-infrabot-link",
   register: (di) => {
-    registerInjectablesFromModules(di, [state, navigation, podImages, styles, clusterHeading, registryDetails, registryQuery, imageSearchQuery, nodeRuntime, nodeRuntimeQuery]);
+    registerInjectablesFromModules(di, [state, navigation, podImages, styles, clusterHeading, registryDetails, registryQuery, imageSearchQuery, nodeRuntime, nodeRuntimeQuery, logsState, logsNavigation, logsStyles, logsQueries]);
   },
 });

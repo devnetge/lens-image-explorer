@@ -1,14 +1,38 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" viewBox="0 0 800 400">
-  <defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#102638"/><stop offset="1" stop-color="#214f5e"/></linearGradient></defs>
-  <rect width="800" height="400" fill="url(#bg)"/>
-  <circle cx="720" cy="20" r="160" fill="#80e0e7" opacity=".06"/>
-  <path d="m70 80 36-20 36 20-36 20Zm0 0v40l36 20v-40m36-20v40l-36 20" fill="none" stroke="#80e0e7" stroke-width="4" stroke-linejoin="round"/>
-  <text x="170" y="91" font-family="system-ui,sans-serif" font-size="33" font-weight="700" fill="#fff">Lens Image Explorer</text>
-  <text x="170" y="124" font-family="system-ui,sans-serif" font-size="20" fill="#a9cdd7">Images. Hashes. Sizes.</text>
-  <rect x="60" y="180" width="680" height="157" rx="14" fill="#102638" opacity=".7"/>
-  <g font-family="ui-monospace,monospace" font-size="19">
-    <text x="86" y="221" fill="#fff">api:release</text><text x="300" y="221" fill="#80e0e7">sha256:a31f…92bc</text><text x="617" y="221" fill="#a9cdd7">248 MiB</text>
-    <text x="86" y="266" fill="#fff">web:release</text><text x="300" y="266" fill="#80e0e7">sha256:8bd2…71ef</text><text x="617" y="266" fill="#a9cdd7">86 MiB</text>
-    <text x="86" y="311" fill="#fff">worker:v2</text><text x="300" y="311" fill="#80e0e7">sha256:6e40…b312</text><text x="617" y="311" fill="#a9cdd7">192 MiB</text>
+  <defs>
+    <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#102c3c"/><stop offset="1" stop-color="#19233e"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#42b8bc" stop-opacity=".18"/><stop offset="1" stop-color="#42b8bc" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="800" height="400" rx="8" fill="url(#bg)"/>
+  <ellipse cx="680" cy="55" rx="330" ry="250" fill="url(#glow)"/>
+  <g opacity=".08" stroke="#b5caf1" fill="none"><path d="M0 172h800M0 212h800M0 252h800M0 292h800M0 332h800M0 372h800M40 172v228M80 172v228M120 172v228M160 172v228M200 172v228M240 172v228M280 172v228M320 172v228M360 172v228M400 172v228M440 172v228M480 172v228M520 172v228M560 172v228M600 172v228M640 172v228M680 172v228M720 172v228M760 172v228"/></g>
+  <g transform="translate(42 42)">
+    <rect width="76" height="76" rx="18" fill="#17384b" stroke="#4e9aab" stroke-opacity=".4"/>
+    <path d="m13 22 19-11 19 11-19 11Zm0 0v22l19 11V33m19-11v13" fill="none" stroke="#7ce6e2" stroke-width="3.5" stroke-linejoin="round"/>
+    <rect x="31" y="36" width="33" height="28" rx="6" fill="#19263e" stroke="#b4a3ff" stroke-width="2.5"/>
+    <path d="m38 44 3 3-3 3m9-6h10m-10 8h7" fill="none" stroke="#d3c8ff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="57" cy="57" r="2" fill="#6de4a3"/>
+  </g>
+  <g font-family="system-ui,-apple-system,sans-serif">
+    <text x="140" y="61" fill="#7ce6e2" font-size="11" font-weight="700" letter-spacing="2.5">KUBERNETES · LENS EXTENSION</text>
+    <text x="138" y="94" fill="#f2f6ff" font-size="32" font-weight="700" letter-spacing="-.7">Image &amp; Logs Explorer</text>
+    <text x="140" y="123" fill="#a6b9d1" font-size="16">Know your images. Follow the evidence.</text>
+    <rect x="42" y="158" width="716" height="201" rx="12" fill="#0e1b2d" stroke="#375064" stroke-opacity=".65"/>
+    <path d="M42 196h716" stroke="#375064" stroke-opacity=".65"/>
+    <circle cx="61" cy="177" r="3" fill="#7ce6e2"/>
+    <text x="74" y="181" fill="#cbd7e8" font-size="11" font-weight="600" letter-spacing="1.4">IMAGES</text>
+    <text x="414" y="181" fill="#cbd7e8" font-size="11" font-weight="600" letter-spacing="1.4">LOGS</text>
+    <path d="M389 196v163" stroke="#375064" stroke-opacity=".5"/>
+    <g font-family="ui-monospace,Menlo,monospace" font-size="13">
+      <text x="62" y="228" fill="#f2f6ff">api:v2.4</text><text x="239" y="228" fill="#7ce6e2">sha256:9ad…f2c</text>
+      <text x="62" y="265" fill="#f2f6ff">worker:v1.8</text><text x="239" y="265" fill="#7ce6e2">sha256:36e…8a1</text>
+      <text x="62" y="302" fill="#f2f6ff">web:v3.1</text><text x="239" y="302" fill="#7ce6e2">sha256:a71…04b</text>
+      <text x="413" y="228" fill="#8296af">12:04:21</text><text x="495" y="228" fill="#7ce6e2">INFO</text><text x="552" y="228" fill="#d5dfed">Request complete</text>
+      <rect x="402" y="242" width="342" height="31" rx="4" fill="#eab76a" fill-opacity=".08"/>
+      <text x="413" y="262" fill="#8296af">12:04:22</text><text x="495" y="262" fill="#eab76a">WARN</text><text x="552" y="262" fill="#d5dfed">Retry scheduled</text>
+      <text x="413" y="299" fill="#8296af">12:04:23</text><text x="495" y="299" fill="#af9df2">DEBUG</text><text x="552" y="299" fill="#d5dfed">Cache hit</text>
+    </g>
+    <text x="62" y="337" fill="#8296af" font-size="11">References · Runtime IDs · Sizes</text>
+    <text x="414" y="337" fill="#8296af" font-size="11">Search · Filter · Inspect</text>
   </g>
 </svg>
