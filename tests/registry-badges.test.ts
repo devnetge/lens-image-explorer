@@ -697,7 +697,7 @@ test("registry badges keep visibility honest and details available from the keyb
       assert.match(markup, /Loaded logs/);
       assert.match(markup, /1 \/ 1 readable containers/);
       assert.equal((markup.match(/class="lle-row lle-logrow/g) ?? []).length, 100);
-      assert.doesNotMatch(markup, /<script>/);
+      assert.doesNotMatch(markup, /<script\b/i);
       assert.match(markup, /&lt;script&gt;literal/);
       assert.match(markup, /Page 1 \/ 2/);
       state.select(state.snapshot.get().entries[0]);
