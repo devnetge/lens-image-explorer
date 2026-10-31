@@ -1,6 +1,6 @@
 {
   "name": "lens-image-explorer",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Inspect container images and investigate bounded, consolidated pod logs in Lens.",
   "keywords": [
     "lens-extension"
@@ -50,7 +50,7 @@
   "devDependencies": {
     "@types/react": "^19.2.0",
     "esbuild": "^0.28.2",
-    "typescript": "^5.6.3",
+    "typescript": "^7.0.2",
     "@k8slens/package-build": "^3.3.0",
     "@k8slens/typescript": "^8.0.0"
   },

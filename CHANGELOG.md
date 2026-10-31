@@ -2,6 +2,11 @@
 
 What changed in each version of this extension, newest first.
 
+## 0.4.2
+
+- Show completed-source logs during collection, display container progress and retain received logs when stopping.
+- Use the current development compiler for reproducible Lens tooling checks.
+
 ## 0.4.1
 
 - Align Lens dependencies with the host and add type, compatibility and prepublication checks.
