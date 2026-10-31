@@ -6,7 +6,7 @@ import type { Subscribable } from "@k8slens/subscribable";
 import { collectContainerImages } from "./image-model";
 import { filterPodsByWorkload, listWorkloads, type WorkloadPodLike, type ReplicaSetLike } from "./workload-model";
 import { createResourceState } from "./resource-state";
-import { mergeLogSnapshots, collectLogs, type LogSnapshot, type RunLogs } from "./log-collector";
+import { mergeLogSnapshots, collectLogs, type LogSnapshot, type LogProgress, type RunLogs } from "./log-collector";
 import { emptyLogFilter, LOG_LIMITS, matchesLog, type LogEntry, type LogFilter } from "./log-model";
 
 export function createLogsState(run: RunLogs, loadPods: () => Subscribable<readonly WorkloadPodLike[]>, loadReplicas: () => Subscribable<readonly ReplicaSetLike[]>) {
@@ -14,6 +14,7 @@ export function createLogsState(run: RunLogs, loadPods: () => Subscribable<reado
   const replicas = createResourceState(loadReplicas);
   const snapshot = observable.box<LogSnapshot | undefined>(undefined, { deep: false });
   const busy = observable.box(false);
+  const progress = observable.box<LogProgress>({ completed: 0, total: 0 }, { deep: false });
   const auto = observable.box(false);
   const scope = observable.box({ namespace: "", image: "", workload: "" }, { deep: false });
   const filter = observable.box<LogFilter>(emptyLogFilter(), { deep: false });
@@ -47,10 +48,22 @@ export function createLogsState(run: RunLogs, loadPods: () => Subscribable<reado
     const abort = new AbortController(); controller = abort;
     runInAction(() => { busy.set(true); notice.set(""); });
     try {
-      const value = await collectLogs(run, inventory.get().sources, abort.signal, range.get());
-      if (generation === current) runInAction(() => { const firstVisible = view.get().rows[0]?.id;
-        snapshot.set(mergeLogSnapshots(snapshot.get(), value));
-        anchor.set(firstVisible); });
+      const beforeCollection = snapshot.get();
+      const publish = (value: LogSnapshot, nextProgress?: LogProgress) => {
+        if (generation !== current || abort.signal.aborted) return;
+        runInAction(() => {
+          const firstVisible = view.get().rows[0]?.id;
+          // Progress snapshots are cumulative: merge each against the original buffer,
+          // reusing visible rows without repeatedly counting the same discarded lines.
+          snapshot.set(mergeLogSnapshots(beforeCollection, value, snapshot.get()));
+          anchor.set(firstVisible);
+          if (nextProgress) progress.set(nextProgress);
+        });
+      };
+      const sources = inventory.get().sources;
+      runInAction(() => progress.set({ completed: 0, total: Math.min(LOG_LIMITS.sources, sources.length) }));
+      const value = await collectLogs(run, sources, abort.signal, range.get(), publish);
+      publish(value);
     } catch {
       if (generation === current && !abort.signal.aborted) runInAction(() => notice.set("Unable to collect logs. Check cluster connectivity and try again."));
     } finally {
@@ -90,7 +103,7 @@ export function createLogsState(run: RunLogs, loadPods: () => Subscribable<reado
     const width = Math.max(1, Math.ceil((last - first + 1) / 40));
     const buckets = Array.from({ length: 40 }, (_, i) => ({ from: first + i * width, to: first + (i + 1) * width - 1, total: 0, error: 0 }));
     for (const e of finite) { const b = buckets[Math.min(39, Math.floor((e.time - first) / width))]; b.total++; if (e.severity === "error") b.error++; }
-    return { inventory: inventory.get(), snapshot: snapshot.get(), busy: busy.get(), auto: auto.get(), scope: scope.get(), filter: filter.get(), range: range.get(),
+    return { inventory: inventory.get(), snapshot: snapshot.get(), busy: busy.get(), progress: progress.get(), auto: auto.get(), scope: scope.get(), filter: filter.get(), range: range.get(),
       selected: selected.get(), facetsOpen: facetsOpen.get(), facets: facetValues.get(), wrap: wrap.get(), showNamespace: showNamespace.get(), showPod: showPod.get(), notice: notice.get(),
       podError: Boolean(pods.error.get()), metadataPending: !pods.data.get() && !pods.error.get(), workloadError: Boolean(replicas.error.get()),
       matched: entries.length, rows: entries.slice(start, start + LOG_LIMITS.page), pages, page: currentPage, buckets,
@@ -112,7 +125,7 @@ export function createLogsState(run: RunLogs, loadPods: () => Subscribable<reado
     }),
     setRange: action((value: number) => { if (![300, 900, 3600, 86400].includes(value)) return; cancel(); auto.set(false); snapshot.set(undefined); selected.set(undefined); range.set(value); anchor.set(undefined); page.set(0); filter.set(emptyLogFilter()); }),
     setAuto: action(() => { auto.set(!auto.get()); if (auto.get()) void refresh(); else cancel(); }),
-    pause: action(() => { auto.set(false); cancel(); }),
+    pause: action(() => { if (busy.get()) notice.set("Collection stopped. Already loaded logs are kept."); auto.set(false); cancel(); }),
     select: action((entry: LogEntry | undefined) => { selected.set(entry); if (entry) { auto.set(false); cancel(); } }),
     reset: action(() => { filter.set(emptyLogFilter()); page.set(0); anchor.set(undefined); }),
     setPage: action((value: number) => { auto.set(false); cancel(); anchor.set(undefined); page.set(Math.max(0, value)); }),

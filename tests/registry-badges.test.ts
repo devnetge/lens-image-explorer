@@ -682,6 +682,30 @@ test("registry badges keep visibility honest and details available from the keyb
     assert.match(empty, /data-lens-component="NoItemsDetailItem"/);
     assert.match(empty, /No container images reported\./);
   });
+  await t.test("Logs view shows partial results and Stop retains them during a slow collection", async () => {
+    const resource = (value: unknown[]) => ({ isLive: () => true, subscribe: () => ({ value: Promise.resolve(computed(() => value)), claim() {}, dispose() {}, refresh() {} }) });
+    const pods = resource([0, 1].map(i => ({ metadata: { uid: `p-${i}`, name: `api-${i}`, namespace: "demo" }, spec: { containers: [{ name: "api", image: "example/api:1" }] } })));
+    const state = ui.createLogsState(async (args: string[]) => args[1] === "api-0" ? "2026-10-30T08:00:00Z INFO already received\n" : new Promise<string>(() => {}), () => pods, () => resource([]));
+    const release = autorun(() => state.view.get());
+    try {
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      const pending = state.refresh();
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      ui.setTestInjections(new Map([[ui.logsStateInjectable, state], [ui.clusterHeadingInjectable, computed(() => "Example cluster")]]));
+      ui.resetTestRenderedProps();
+      let markup = renderToStaticMarkup(createElement(ui.LogsView, { clusterId: "cluster-a" }));
+      assert.match(markup, /1 \/ 2 readable containers.*1 finished/);
+      assert.match(markup, /already received/);
+      assert.match(markup, /Loaded 1 \/ 2 containers/);
+      const stop = ui.getTestRenderedProps().find(({ type, props }: any) => type === "button" && props.children === "Stop");
+      assert.ok(stop, "Stop is available while a slower source is pending");
+      stop.props.onClick(); await pending;
+      markup = renderToStaticMarkup(createElement(ui.LogsView, { clusterId: "cluster-a" }));
+      assert.match(markup, /Already loaded logs are kept/);
+      assert.match(markup, /already received/);
+      assert.equal(state.view.get().busy, false);
+    } finally { release(); }
+  });
   await t.test("Logs view renders bounded rows, escaped messages, filters, coverage and details", async () => {
     const source = (value: unknown[]) => ({ isLive: () => true, subscribe: () => ({ value: Promise.resolve(computed(() => value)), claim() {}, dispose() {}, refresh() {} }) });
     const pods = source([{ metadata: { uid: "p", name: "api-0", namespace: "demo" }, spec: { containers: [{ name: "api", image: "example/api:1" }] }, status: { containerStatuses: [{ name: "api", state: { running: {} } }] } }]);

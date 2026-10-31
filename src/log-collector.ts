@@ -33,21 +33,31 @@ async function readSource(run: RunLogs, source: LogSource, signal: AbortSignal, 
     return { entries: [], result: { source, status, limited: false } as SourceResult };
   } finally { clearTimeout(timer); signal.removeEventListener("abort", abort); }
 }
-export async function collectLogs(run: RunLogs, sources: readonly LogSource[], signal: AbortSignal, since = 900): Promise<LogSnapshot> {
+export interface LogProgress { readonly completed: number; readonly total: number }
+export async function collectLogs(run: RunLogs, sources: readonly LogSource[], signal: AbortSignal, since = 900,
+  onProgress?: (snapshot: LogSnapshot, progress: LogProgress) => void): Promise<LogSnapshot> {
   if (signal.aborted) throw abortError();
   const unique = new Map<string, LogSource>();
   for (const source of sources) if (!unique.has(source.id)) unique.set(source.id, source);
   const selected = [...unique.values()].sort((a, b) => a.id.localeCompare(b.id)).slice(0, LOG_LIMITS.sources);
   const results: { entries: LogEntry[]; result: SourceResult }[] = new Array(selected.length);
   let next = 0;
+  let completed = 0;
   await Promise.all(Array.from({ length: Math.min(selected.length, LOG_LIMITS.concurrent) }, async () => {
     while (next < selected.length) {
       if (signal.aborted) throw abortError();
       const index = next++;
       results[index] = await readSource(run, selected[index], signal, since);
+      if (signal.aborted) throw abortError();
+      completed++;
+      onProgress?.(boundedSnapshot(results.filter(Boolean), unique.size - selected.length), { completed, total: selected.length });
     }
   }));
   if (signal.aborted) throw abortError();
+  return boundedSnapshot(results, unique.size - selected.length);
+}
+
+function boundedSnapshot(results: { entries: LogEntry[]; result: SourceResult }[], omittedSources: number): LogSnapshot {
   const all = sortLogs(results.flatMap(result => result.entries));
   const entries: LogEntry[] = [];
   let bytes = 0;
@@ -57,29 +67,35 @@ export async function collectLogs(run: RunLogs, sources: readonly LogSource[], s
     if (bytes + size > LOG_LIMITS.retainedBytes) break;
     bytes += size; entries.push(all[i]);
   }
-  return { entries: entries.reverse(), sources: results.map(r => r.result), omittedSources: unique.size - selected.length, dropped: all.length - entries.length, collectedAt: Date.now() };
+  return { entries: entries.reverse(), sources: results.map(r => r.result), omittedSources, dropped: all.length - entries.length, collectedAt: Date.now() };
 }
 
 /** Merge overlapping bounded reads without replacing retained rows or collapsing repeated lines. */
-export function mergeLogSnapshots(previous: LogSnapshot | undefined, incoming: LogSnapshot): LogSnapshot {
-  if (!previous) return incoming;
+export function mergeLogSnapshots(previous: LogSnapshot | undefined, incoming: LogSnapshot, visible = previous): LogSnapshot {
+  if (!previous && !visible) return incoming;
   const identity = (entry: LogEntry) => JSON.stringify([entry.source.id, entry.source.requestedImage, entry.timestamp, entry.message, entry.truncated]);
   const existing = new Map<string, LogEntry[]>();
+  const reusable = new Map<string, LogEntry[]>();
   let ordinal = 0;
-  for (const entry of previous.entries) {
+  for (const entry of previous?.entries ?? []) {
     const key = identity(entry);
     const group = existing.get(key) ?? [];
     group.push(entry); existing.set(key, group);
+  }
+  for (const entry of visible?.entries ?? []) {
+    const key = identity(entry);
+    const group = reusable.get(key) ?? [];
+    group.push(entry); reusable.set(key, group);
     ordinal = Math.max(ordinal, Number(entry.id.slice(entry.id.lastIndexOf(":") + 1)) || 0);
   }
   const occurrences = new Map<string, number>();
-  const merged = [...previous.entries];
+  const merged = [...previous?.entries ?? []];
   for (const entry of incoming.entries) {
     const key = identity(entry);
     const occurrence = occurrences.get(key) ?? 0;
     occurrences.set(key, occurrence + 1);
     if (occurrence < (existing.get(key)?.length ?? 0)) continue;
-    merged.push({ ...entry, id: `${entry.source.id}:${++ordinal}` });
+    merged.push(reusable.get(key)?.[occurrence] ?? { ...entry, id: `${entry.source.id}:${++ordinal}` });
   }
   sortLogs(merged);
   const retained: LogEntry[] = [];
@@ -90,5 +106,5 @@ export function mergeLogSnapshots(previous: LogSnapshot | undefined, incoming: L
     if (bytes + size > LOG_LIMITS.retainedBytes) break;
     retained.push(merged[i]); bytes += size;
   }
-  return { ...incoming, entries: retained.reverse(), dropped: previous.dropped + incoming.dropped + merged.length - retained.length };
+  return { ...incoming, entries: retained.reverse(), dropped: (previous?.dropped ?? 0) + incoming.dropped + merged.length - retained.length };
 }

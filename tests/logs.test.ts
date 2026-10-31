@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { autorun, computed } from "mobx";
-import { collectLogs, logArgs } from "../src/log-collector";
+import { collectLogs, logArgs, mergeLogSnapshots, type LogSnapshot } from "../src/log-collector";
 import { LOG_LIMITS, parseLogs, severityOf, matchesLog, emptyLogFilter, type LogSource } from "../src/log-model";
 import { createLogsState } from "../src/logs-state.injectable";
 import { queryLoadedLogs } from "../src/logs-query.injectable";
@@ -189,4 +189,63 @@ test("day-range requests receive a longer but bounded timeout", async t => {
   t.mock.timers.tick(45000);
   const result = await pending;
   assert.equal(aborted, true); assert.equal(result.sources[0].status, "timeout");
+});
+
+test("fast sources publish bounded results while another source is still pending", async () => {
+  let finish!: (value: string) => void;
+  const updates: { entries: number; completed: number; total: number }[] = [];
+  let settled = false;
+  const pending = collectLogs(async args => args[1] === "app-0" ? line() : new Promise(resolve => { finish = resolve; }),
+    [source(0), source(1)], new AbortController().signal, 900,
+    (snapshot, progress) => updates.push({ entries: snapshot.entries.length, ...progress }));
+  void pending.then(() => { settled = true; });
+  await tick();
+  assert.equal(settled, false);
+  assert.deepEqual(updates, [{ entries: 1, completed: 1, total: 2 }]);
+  finish(line(1)); await pending;
+  assert.deepEqual(updates.at(-1), { entries: 2, completed: 2, total: 2 });
+});
+
+test("initial progressive logs survive Stop and late results cannot contaminate a new scope", async () => {
+  const meta = metadata(); let calls = 0;
+  const twoPods = { ...meta.pods, subscribe: () => ({ value: Promise.resolve(computed(() => [
+    { metadata: { uid: "a", name: "app-0", namespace: "test" }, spec: { containers: [{ name: "app", image: "example/app:1" }] } },
+    { metadata: { uid: "b", name: "app-1", namespace: "test" }, spec: { containers: [{ name: "app", image: "example/app:1" }] } },
+  ])), claim() {}, dispose() {}, refresh() {} }) };
+  let finish!: (value: string) => void;
+  const state = createLogsState(async args => { calls++; return args[1] === "app-0" ? line() : new Promise(resolve => { finish = resolve; }); }, () => twoPods, () => meta.replicas);
+  const release = autorun(() => state.view.get());
+  try {
+    await tick(); const pending = state.refresh(); await tick();
+    assert.equal(calls, 2);
+    assert.equal(state.view.get().busy, true);
+    assert.equal(state.snapshot.get()?.entries.length, 1);
+    assert.deepEqual(state.view.get().progress, { completed: 1, total: 2 });
+    state.pause(); await pending;
+    assert.equal(state.snapshot.get()?.entries.length, 1);
+    assert.match(state.view.get().notice, /Already loaded logs are kept/);
+    state.setScope("namespace", "elsewhere");
+    finish(line(1)); await tick();
+    assert.equal(state.snapshot.get(), undefined);
+  } finally { release(); }
+});
+
+test("cumulative progress counts discarded lines once and preserves visible row identities", async () => {
+  const before = await collectLogs(async () => line(0, "INFO retained before refresh"), [source()], new AbortController().signal);
+  let visible: LogSnapshot | undefined = before;
+  let retainedRow = before.entries[0];
+  const final = await collectLogs(async () => Array.from({ length: 400 }, (_, i) => line(1, `INFO fresh-${i}`)).join(""),
+    Array.from({ length: 12 }, (_, i) => source(i)), new AbortController().signal, 900,
+    (snapshot, progress) => {
+      visible = mergeLogSnapshots(before, snapshot, visible);
+      assert.ok(visible.entries.length <= LOG_LIMITS.entries);
+      if (progress.completed === 1) retainedRow = visible.entries.at(-1)!;
+      if (progress.completed === 2) assert.ok(visible.entries.includes(retainedRow));
+    });
+  const lastRow = visible!.entries.at(-1)!;
+  visible = mergeLogSnapshots(before, final, visible);
+  assert.equal(visible.dropped, mergeLogSnapshots(before, final).dropped);
+  assert.equal(visible.dropped, 1801);
+  assert.equal(visible.entries.at(-1), lastRow);
+  assert.equal(new Set(visible.entries.map(e => e.id)).size, visible.entries.length);
 });
